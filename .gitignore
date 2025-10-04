@@ -1,0 +1,6 @@
+/.yardoc
+/doc
+.byebug*
+*.gem
+*.lock
+*.so
