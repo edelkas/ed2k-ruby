@@ -106,9 +106,9 @@ module ED2K
   # Standard part and block sizes for different purposes
 
 
-  MAX_EMULE_FILE_SIZE		  = 256 * 1024 ** 3 # Supported file size limit (256GB)
+  MAX_EMULE_FILE_SIZE     = 256 * 1024 ** 3 # Supported file size limit (256GB)
   OLD_MAX_EMULE_FILE_SIZE = 4290048000	    # Old file size limit, before 64bit support (~4GB) (((2^32-1)/PARTSIZE)*PARTSIZE = 441 parts)
-  PARTSIZE				        = 9500 * 1024     # Parts are the primary file subdivision (~9.28MB). Clients can only share completed parts.
+  PARTSIZE                = 9500 * 1024     # Parts are the primary file subdivision (~9.28MB). Clients can only share completed parts.
   EMBLOCKSIZE             = 180 * 1024      # Blocks are the secondary file subdivision (180KB). Clients usually request these blocks to other clients.
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
 end
