@@ -1,4 +1,5 @@
 require 'socket'
+require 'thread'
 
 module ED2K
   # A {Core} instance contains all necessary elements to operate your connection to the ed2k network. It manages the sockets,
@@ -24,6 +25,7 @@ module ED2K
   class Core
 
     SOCKET_READ_SIZE         = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
+    SOCKET_WRITE_SIZE        = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
     DEFAULT_THREAD_FREQUENCY = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
     DEFAULT_THREAD_TIMEOUT   = 1         # Maximum time in seconds to wait for a loop iteration to finish when stopping a thread
 
@@ -32,7 +34,7 @@ module ED2K
       reload_preferences()
 
       # Init socket thread
-      init_sockets()
+      init_connections()
       @control_socket = TCPServer.new(@tcp_port)
       start_socket_thread()
       @init = true
@@ -84,27 +86,25 @@ module ED2K
     def run_socket_thread
       while @thSockRun
         # Block until next socket activity
-        to_read = [@control_socket, **@sockets]
-        to_write = @sockets
+        to_read = [@control_socket, **@connections.values.map(&:socket)]
+        to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
         readable, writable = IO.select(to_read, to_write)
 
         # Read from sockets
         readable.each do |socket|
           # New incoming connection, accept it
-          if socket == @control_socket
-            add_socket(socket.accept)
-            next
-          end
+          next add_connection(socket.accept) if socket == @control_socket
 
           # Server or client activity, read data
-          # TODO: We should defer reading and writing to the client objects themselves, who manage their buffers
-          #data = socket.read_nonblock(SOCKET_READ_SIZE)
-
+          connection = @connections[socket.fileno]
+          read = connection.read(SOCKET_READ_SIZE)
+          remove_connection(connection) if read == -1 # EOF received
         end
 
         # Write to sockets
         writable.each do |socket|
-
+          connection = @connections[socket.fileno]
+          written = connection.write(SOCKET_WRITE_SIZE)
         end
 
         # Prepare next iteration
@@ -115,21 +115,110 @@ module ED2K
       end
     end
 
-    # Initialize the structure storing all sockets that need to be monitored. They're all monitored for both read and
-    # write activity. For now we use a simple array, since that's what IO.select requires, but this may change for
-    # something better in the future.
-    def init_sockets
-      @sockets = []
+    # Initialize the structure storing all connections that need to be monitored for either read or write activity.
+    # We use a hash keyed on the underlying socket's file descriptor.
+    def init_connections
+      @connections = {}
     end
 
-    # Add a new socket for IO monitoring
-    def add_socket(socket)
-      @sockets << socket
+    # Create a new connection and add it for IO monitoring
+    # @todo Create either Server or Client here, they both implement Connection
+    def add_connection(socket)
+      # conn = ...
+      @connections[socket.fileno] = conn
     end
 
-    # Stop monitoring a socket and remove the reference to it
-    def remove_socket(socket)
-      @sockets.delete(socket)
+    # Stop monitoring a connection and remove the reference to it
+    def remove_connection(conn)
+      @connections.delete(conn.socket.fileno)
+    end
+  end
+
+  # Encapsulates the common functionality of both servers and clients, essentially managing their socket. Each connection
+  # has 3 thread-safe queues:
+  #
+  # - The **incoming** queue stores ed2k packets as they are received from the socket.
+  # - The **standard** queue stores outgoing data packets to send through the socket, i.e., the files being uploaded.
+  #   They usually comprise the majority of the bandwidth.
+  # - The **control** queue stores outgoing control packets to send through the socket, i.e., any packet that is not
+  #   data. They take precedence over data packets to minimize their delay.
+  #
+  # Incoming packets are placed in the queue by the socket thread and processed by the packet thread. Conversely, outgoing
+  # packets are placed in the queue by the packet thread, to be sent by the socket thread.
+  # @todo Add integrity checks to the sockets before attempting to read or write (check for close...)
+  # @todo Add integrity checks to the received packets (correct header...)
+  module Connection
+
+    # The underlying {Socket} used by this connection.
+    # @return [Socket]
+    attr_reader :socket
+
+    # Whether we have something to write to the socket, and thus should monitor it
+    # @return [Boolean] `true` if the
+    def ready_for_writing
+      !@write_buffer.empty? || !@control_queue.empty? || !@standard_queue.empty?
+    end
+
+    # Write a certain amount of data from the write buffer and the packet queues to the socket. Any packet that is popped
+    # from the outgoing queues and not sent completely will remain in the buffer for the next call.
+    # @todo Can we prevent so much string slicing here?
+    # @param max [Integer] Maximum amount of bytes to put on the socket. Useful for bandwidth management.
+    # @return [Integer] Total amount of bytes actually writen to the socket.
+    def write(max)
+      sent, written = 0, 0
+
+      # Finish any outstanding packets
+      if !@write_buffer.empty?
+        sent += written = @socket.write_nonblock(@write_buffer[0, max - sent])
+        @write_buffer.slice!(0, written)
+        return sent if !@write_buffer.empty?
+      end
+
+      # Send as many control packets as possible
+      while sent < max && !@control_queue.empty?
+        @write_buffer = @control_queue.pop
+        sent += written = @socket.write_nonblock(@write_buffer[0, max - sent])
+        @write_buffer.slice!(0, written)
+        return sent if !@write_buffer.empty?
+      end
+
+      # Send as many data packets as possible
+      while sent < max && !@standard_queue.empty?
+        @write_buffer = @standard_queue.pop
+        sent += written = @socket.write_nonblock(@write_buffer[0, max - sent])
+        @write_buffer.slice!(0, written)
+        return sent if !@write_buffer.empty?
+      end
+
+      sent
+    rescue IO::WaitWritable
+      sent
+    end
+
+    # Read a certain amount of data from the socket into the read buffer. Any complete packet will be pushed into the
+    # incoming packet queue, and the remaining incomplete data will stay in the buffer for the next call.
+    # @todo Can we prevent so much string slicing here?
+    # @param max [Integer] Maximum amount of bytes to read from the socket. Useful for bandwidth management.
+    # @return [Integer] Total amount of bytes actually read from the socket. If `EOF` is found at the start, returns -1.
+    def read(max)
+      received = @read_buffer.size
+
+      # Read as much as possible from the socket immediately
+      @read_buffer << @socket.read_nonblock(max)
+      received = @read_buffer.size - received
+
+      # Push complete packets into the incoming queue
+      while @read_buffer.size >= 6
+        protocol, size, opcode = @read_buffer.unpack('CL<C')
+        break if @read_buffer.size < 6 + size
+        @incoming_queue.push(@read_buffer.slice!(0, 6 + size))
+      end
+
+      received
+    rescue IO::WaitReadable
+      received
+    rescue EOFError
+      -1
     end
   end
 end
