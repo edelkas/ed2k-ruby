@@ -111,4 +111,5 @@ module ED2K
   PARTSIZE                = 9500 * 1024     # Parts are the primary file subdivision (~9.28MB). Clients can only share completed parts.
   EMBLOCKSIZE             = 180 * 1024      # Blocks are the secondary file subdivision (180KB). Clients usually request these blocks to other clients.
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
+  PACKET_HEADER_SIZE      = 6               # The header of every ed2k packet contains the protocol (char), size (uint32) and opcode (char).
 end

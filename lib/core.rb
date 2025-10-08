@@ -122,14 +122,13 @@ module ED2K
     end
 
     # Create a new connection and add it for IO monitoring
-    # @todo Create either Server or Client here, they both implement Connection
     def add_connection(socket)
-      # conn = ...
-      @connections[socket.fileno] = conn
+      @connections[socket.fileno] = Connection.new(socket)
     end
 
     # Stop monitoring a connection and remove the reference to it
     def remove_connection(conn)
+      conn.socket.destroy
       @connections.delete(conn.socket.fileno)
     end
   end
@@ -147,14 +146,43 @@ module ED2K
   # packets are placed in the queue by the packet thread, to be sent by the socket thread.
   # @todo Add integrity checks to the sockets before attempting to read or write (check for close...)
   # @todo Add integrity checks to the received packets (correct header...)
-  module Connection
+  class Connection
 
     # The underlying {Socket} used by this connection.
     # @return [Socket]
     attr_reader :socket
 
+    def initialize(socket)
+      # Underlying system socket
+      @socket = socket
+
+      # Buffers to hold incoming and outgoing data, usually partial packets
+      @read_buffer = ''
+      @write_buffer = ''
+
+      # Queues to hold incoming and outgoing packets
+      @incoming_queue = Queue.new
+      @control_queue  = Queue.new
+      @standard_queue = Queue.new
+    end
+
+    # Close the underlying socket and free all the resources
+    def destroy
+      # Empty all data buffers
+      @write_buffer = ''
+      @read_buffer = ''
+
+      # Close all packet queues
+      @incoming_queue.close
+      @standard_queue.close
+      @control_queue.close
+
+      # Close underlying connection
+      @socket.close
+    end
+
     # Whether we have something to write to the socket, and thus should monitor it
-    # @return [Boolean] `true` if the
+    # @return [Boolean] `true` if the write buffer or outgoing queues aren't empty, `false` otherwise.
     def ready_for_writing
       !@write_buffer.empty? || !@control_queue.empty? || !@standard_queue.empty?
     end
@@ -208,10 +236,10 @@ module ED2K
       received = @read_buffer.size - received
 
       # Push complete packets into the incoming queue
-      while @read_buffer.size >= 6
+      while @read_buffer.size >= PACKET_HEADER_SIZE
         protocol, size, opcode = @read_buffer.unpack('CL<C')
-        break if @read_buffer.size < 6 + size
-        @incoming_queue.push(@read_buffer.slice!(0, 6 + size))
+        break if @read_buffer.size < PACKET_HEADER_SIZE + size
+        @incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
       end
 
       received
