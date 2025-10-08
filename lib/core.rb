@@ -24,6 +24,7 @@ module ED2K
   # This separation ensures that operations handling packets or data do not block socket activity.
   class Core
 
+    LOG_SIZE                 = 1000      # Number of messages to save in the log
     SOCKET_READ_SIZE         = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
     SOCKET_WRITE_SIZE        = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
     DEFAULT_THREAD_FREQUENCY = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
@@ -31,12 +32,18 @@ module ED2K
 
     def initialize
       @init = false
+      @log = []
       reload_preferences()
 
       # Init socket thread
       init_connections()
       @control_socket = TCPServer.new(@tcp_port)
       start_socket_thread()
+
+      # Init packet thread
+      @handlers = {}
+      start_packet_thread()
+
       @init = true
     end
 
@@ -57,6 +64,17 @@ module ED2K
       @thSock = Thread.new{ run_socket_thread() }
     end
 
+    # Starts the packet thread and begins monitoring incoming packets to be parsed
+    # @note This is done automatically by {#initialize}, only do manually if stopped manually or if it crashed.
+    # @return [Thread] The packet thread object
+    def start_packet_thread
+      @thPackRun = true
+      return @thPack if @thPack&.alive?
+      @thPackFreq = DEFAULT_THREAD_FREQUENCY
+      @thPackTick = Time.now
+      @thPack = Thread.new{ run_packet_thread() }
+    end
+
     # Attempts to stop the socket thread gracefully and end network monitoring. It will wait until the current loop is
     # finished, which is normally very quick. It does **not** close the sockets afterwards.
     # @note This is done automatically when disconnecting.
@@ -70,6 +88,19 @@ module ED2K
       true
     end
 
+    # Attempts to stop the packet thread gracefully and end packet parsing. It will wait until the current loop is
+    # finished, which is normally very quick.
+    # @note This is done automatically when disconnecting.
+    # @see #kill_packet_thread
+    # @return [Boolean] `true` if the thread was stopped successfully, `false` if it wasn't running or failed to be stopped.
+    def stop_socket_thread
+      return false if !@thPack&.alive?
+      @thPackRun = false
+      return false if !@thPack.join(DEFAULT_THREAD_TIMEOUT)
+      @thPack.kill
+      true
+    end
+
     # Forcefully kill the socket thread and stop network monitoring. It does **not** close the sockets afterwards.
     # @see #stop_socket_thread
     # @return [Boolean] `true` if the thread was killed, `false` if it wasn't running.
@@ -78,6 +109,24 @@ module ED2K
       @thSockRun = false
       @thSock.kill
       true
+    end
+
+    # Forcefully kill the packet thread and stop packet parsing.
+    # @see #stop_packet_thread
+    # @return [Boolean] `true` if the thread was killed, `false` if it wasn't running.
+    def kill_socket_thread
+      return false if !@thPack&.alive?
+      @thPackRun = false
+      @thPack.kill
+      true
+    end
+
+    # Add a message to the log of this core.
+    # @param msg [String] Text to log.
+    def log(msg)
+      @log << msg
+      @log.shift if @log.length > LOG_SIZE
+      puts "[%s %s]" % [Time.now.strftime('%H:%M:%S'), msg]
     end
 
     private
@@ -115,6 +164,22 @@ module ED2K
       end
     end
 
+    # Packet thread monitors the incoming packet queue for new received packets to parse and process
+    def run_packet_thread
+      while @thPackRun
+        # Consume all new packets
+        @connections.each do |conn|
+          conn.process_packets
+        end
+
+        # Prepare next iteration
+        current_time = Time.now
+        elapsed = current_time - @thPackTick
+        @thPackTick = current_time
+        sleep(@thPackFreq - elapsed) if elapsed < @thPackFreq
+      end
+    end
+
     # Initialize the structure storing all connections that need to be monitored for either read or write activity.
     # We use a hash keyed on the underlying socket's file descriptor.
     def init_connections
@@ -131,10 +196,11 @@ module ED2K
       conn.socket.destroy
       @connections.delete(conn.socket.fileno)
     end
-  end
 
-  # Encapsulates the common functionality of both servers and clients, essentially managing their socket. Each connection
-  # has 3 thread-safe queues:
+  end # Core
+
+  # Wrapper around a socket that manages I/O and its associated resources. Internally, each connection has 2 buffers
+  # (read and write) as well as 3 thread-safe queues:
   #
   # - The **incoming** queue stores ed2k packets as they are received from the socket.
   # - The **standard** queue stores outgoing data packets to send through the socket, i.e., the files being uploaded.
@@ -248,5 +314,62 @@ module ED2K
     rescue EOFError
       -1
     end
-  end
-end
+
+    # Queue an ed2k packet to be sent through the socket.
+    # @param protocol [Integer] A 1-byte integer specifying the protocol to use ({OP_EDONKEYPROT}, {OP_EMULEPROT}...)
+    # @param opcode [Integer] A 1-byte integer specifying the operation to perform
+    # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
+    # @param control [Boolean] Whether the packet is a control packet or a data (standard) packet.
+    # @return [Boolean] Whether the packet was successfully queued in the corresponding packet queue or not.
+    def queue_packet(protocol, opcode, payload, control = true)
+      queue = control ? @control_queue : @standard_queue
+      return false if queue.closed?
+      queue.push(payload.prepend([protocol, payload.size, opcode].pack('CL<C')))
+      true
+    end
+
+    # Process a new incoming packet and run the corresponding handler
+    # @param packet [String] A binary string containing the raw packet data
+    # @return [Boolean] Whether the packet was parsed and processed successfully or not
+    def process_packet(packet)
+      # Sanity checks
+      length = packet.length
+      return false if length < PACKET_HEADER_SIZE
+      protocol, size, opcode = packet.unpack('CL<C')
+      return false if length != PACKET_HEADER_SIZE + size
+      packet.slice!(0, PACKET_HEADER_SIZE)
+
+      # Parse packet - depending on protocol - and obtain opcode-specific packet data
+      case protocol
+      when OP_EDONKEYPROT
+        data = parse_edonkey_packet(opcode, packet)
+      when OP_EMULEPROT
+        data = parse_emule_packet(opcode, packet)
+      when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
+        @core.log("Received unsupported ed2k protocol #{protocol}")
+        return true
+      else
+        @core.log("Received unknown ed2k protocol #{protocol}")
+        return false
+      end
+
+      # Run the custom handler
+      @core.handlers[protocol][opcode].call(data)
+    end
+
+    # Consumes and processes all the currently pending packets from the incoming queue
+    # @return [Integer] Amount of successfully processed packets in this call
+    def process_packets
+      packets = 0
+      loop do
+        packet = @incoming_queue.pop(true)
+        packets += 1 if process_packet(packet)
+      end
+      packets
+    rescue ThreadError
+      packets
+    end
+
+  end # Connection
+
+end # ED2K
