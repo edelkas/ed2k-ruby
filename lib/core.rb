@@ -1,6 +1,3 @@
-require 'socket'
-require 'thread'
-
 module ED2K
   # A {Core} instance contains all necessary elements to operate your connection to the ed2k network. It manages the sockets,
   # communicates with servers and other clients, and handles the reception and sending of ed2k packets, running the appropriate
@@ -188,7 +185,7 @@ module ED2K
 
     # Create a new connection and add it for IO monitoring
     def add_connection(socket)
-      @connections[socket.fileno] = Connection.new(socket)
+      @connections[socket.fileno] = Connection.new(socket, self)
     end
 
     # Stop monitoring a connection and remove the reference to it
@@ -214,13 +211,19 @@ module ED2K
   # @todo Add integrity checks to the received packets (correct header...)
   class Connection
 
-    # The underlying {Socket} used by this connection.
+    # The underlying `Socket` used by this connection.
     # @return [Socket]
     attr_reader :socket
 
-    def initialize(socket)
-      # Underlying system socket
+    # The {Core} object responsible for this connection.
+    # @return [Core]
+    attr_reader :core
+
+    # @param socket [Socket] The underlying `Socket` object handling this connection.
+    def initialize(socket, core)
+      # Underlying system socket, and core container this connection belongs to
       @socket = socket
+      @core = core
 
       # Buffers to hold incoming and outgoing data, usually partial packets
       @read_buffer = ''

@@ -113,3 +113,11 @@ module ED2K
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
   PACKET_HEADER_SIZE      = 6               # The header of every ed2k packet contains the protocol (char), size (uint32) and opcode (char).
 end
+
+require 'ipaddr'
+require 'socket'
+require 'thread'
+
+require_relative 'server.rb'
+require_relative 'core.rb'
+require_relative 'hash.rb'
