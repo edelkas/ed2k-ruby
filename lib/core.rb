@@ -90,7 +90,7 @@ module ED2K
     # @note This is done automatically when disconnecting.
     # @see #kill_packet_thread
     # @return [Boolean] `true` if the thread was stopped successfully, `false` if it wasn't running or failed to be stopped.
-    def stop_socket_thread
+    def stop_packet_thread
       return false if !@thPack&.alive?
       @thPackRun = false
       return false if !@thPack.join(DEFAULT_THREAD_TIMEOUT)
@@ -111,7 +111,7 @@ module ED2K
     # Forcefully kill the packet thread and stop packet parsing.
     # @see #stop_packet_thread
     # @return [Boolean] `true` if the thread was killed, `false` if it wasn't running.
-    def kill_socket_thread
+    def kill_packet_thread
       return false if !@thPack&.alive?
       @thPackRun = false
       @thPack.kill
@@ -132,8 +132,9 @@ module ED2K
     def run_socket_thread
       while @thSockRun
         # Block until next socket activity
-        to_read = [@control_socket, **@connections.values.map(&:socket)]
+        to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
         to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
+        to_read.push(@control_socket)
         readable, writable = IO.select(to_read, to_write)
 
         # Read from sockets
@@ -144,13 +145,17 @@ module ED2K
           # Server or client activity, read data
           connection = @connections[socket.fileno]
           read = connection.read(SOCKET_READ_SIZE)
-          remove_connection(connection) if read == -1 # EOF received
         end
 
         # Write to sockets
         writable.each do |socket|
           connection = @connections[socket.fileno]
           written = connection.write(SOCKET_WRITE_SIZE)
+        end
+
+        # Ditch dead sockets
+        @connections.each do |conn|
+          remove_connection(conn) if !conn.alive?
         end
 
         # Prepare next iteration
@@ -190,7 +195,7 @@ module ED2K
 
     # Stop monitoring a connection and remove the reference to it
     def remove_connection(conn)
-      conn.socket.destroy
+      conn.destroy
       @connections.delete(conn.socket.fileno)
     end
 
@@ -207,7 +212,6 @@ module ED2K
   #
   # Incoming packets are placed in the queue by the socket thread and processed by the packet thread. Conversely, outgoing
   # packets are placed in the queue by the packet thread, to be sent by the socket thread.
-  # @todo Add integrity checks to the sockets before attempting to read or write (check for close...)
   # @todo Add integrity checks to the received packets (correct header...)
   class Connection
 
@@ -223,10 +227,14 @@ module ED2K
     def initialize(socket, core)
       # Underlying system socket, and core container this connection belongs to
       @socket = socket
-      @core = core
+      @core   = core
+
+      # Current state of the connection
+      @readable = true
+      @writable = true
 
       # Buffers to hold incoming and outgoing data, usually partial packets
-      @read_buffer = ''
+      @read_buffer  = ''
       @write_buffer = ''
 
       # Queues to hold incoming and outgoing packets
@@ -235,25 +243,68 @@ module ED2K
       @standard_queue = Queue.new
     end
 
-    # Close the underlying socket and free all the resources
+    # Close the underlying socket and free all the resources (system socket, internal R/W buffers, packet queues...)
+    # @note This clears the incoming packet queue, so it should only be called when we we've finished processing it or
+    #       we no longer care about what's in there.
     def destroy
-      # Empty all data buffers
-      @write_buffer = ''
-      @read_buffer = ''
-
-      # Close all packet queues
-      @incoming_queue.close
-      @standard_queue.close
-      @control_queue.close
+      # Shutdown each socket end, stop monitoring it for reading or writing,
+      # and clear the buffers and packet queues
+      close_for_reading(true)
+      close_for_writing()
 
       # Close underlying connection
       @socket.close
     end
 
+    # Whether we can read from the socket. In that case, we always monitor it.
+    # @return [Boolean] `true` if the socket is open for reading, `false` otherwise.
+    def ready_for_reading
+      @readable
+    end
+
     # Whether we have something to write to the socket, and thus should monitor it
     # @return [Boolean] `true` if the write buffer or outgoing queues aren't empty, `false` otherwise.
     def ready_for_writing
-      !@write_buffer.empty? || !@control_queue.empty? || !@standard_queue.empty?
+      @writable && (!@write_buffer.empty? || !@control_queue.empty? || !@standard_queue.empty?)
+    end
+
+    # Whether at least one end of the socket (R/W) is still open and functioning, or we still have unfinished work with
+    # this connection, such as processing received packets.
+    def alive?
+      @readable || @writable || !@incoming_queue.empty?
+    end
+
+    # Stop reading from the socket, usually called when the other end of the socket has stopped writing. This shuts down
+    # the reading end of the socket and marks it to stop monitoring. It also clears the read buffer, as anything still in
+    # there is an incomplete packet and may be safely discarded. Optionally also clears the incoming packet queue,
+    # although this can be maintained in order to finish processing them later.
+    # @param clear [Boolean] If `true` then the read buffer and queue is cleared, otherwise they're kept.
+    # @return [Boolean] `true` if the connection has been closed for reading, `false` if it was already closed.
+    def close_for_reading(clear = false)
+      return false if !@readable
+      @readable = false
+      @socket.shutdown(Socket::SHUT_RD)
+      @read_buffer.clear
+      return true if !clear
+      @incoming_queue.clear
+      @incoming_queue.close
+      true
+    end
+
+    # Stop writing to a socket, called when the other end of the socket has stopped reading, or when we are done writing.
+    # This shuts down the writing end of the socket and marks it to stop monitoring. It also clears the write buffer and
+    # the outgoing packet queues, anything in there not sent is discarded.
+    # @return [Boolean] `true` if the connection has been closed for writing, `false` if it was already closed.
+    def close_for_writing
+      return false if !@writable
+      @writable = false
+      @socket.shutdown(Socket::SHUT_WR)
+      @write_buffer.clear
+      @standard_queue.clear
+      @control_queue.clear
+      @standard_queue.close
+      @control_queue.close
+      true
     end
 
     # Write a certain amount of data from the write buffer and the packet queues to the socket. Any packet that is popped
@@ -288,7 +339,10 @@ module ED2K
       end
 
       sent
-    rescue IO::WaitWritable
+    rescue IO::WaitWritable # Cannot write any more
+      sent
+    rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
+      close_for_writing()
       sent
     end
 
@@ -296,7 +350,7 @@ module ED2K
     # incoming packet queue, and the remaining incomplete data will stay in the buffer for the next call.
     # @todo Can we prevent so much string slicing here?
     # @param max [Integer] Maximum amount of bytes to read from the socket. Useful for bandwidth management.
-    # @return [Integer] Total amount of bytes actually read from the socket. If `EOF` is found at the start, returns -1.
+    # @return [Integer] Total amount of bytes actually read from the socket. If `EOF` or the socket was closed, returns -1.
     def read(max)
       received = @read_buffer.size
 
@@ -312,9 +366,13 @@ module ED2K
       end
 
       received
-    rescue IO::WaitReadable
-      received
-    rescue EOFError
+    rescue IO::WaitReadable # Nothing to read
+      0
+    rescue EOFError # Peer stopped writing
+      close_for_reading()
+      -1
+    rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
+      close_for_reading()
       -1
     end
 
