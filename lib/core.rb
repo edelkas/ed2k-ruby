@@ -30,6 +30,8 @@ module ED2K
     def initialize
       @init = false
       @log = []
+      @servers = {}
+      @clients = {}
       reload_preferences()
 
       # Init socket thread
@@ -116,6 +118,22 @@ module ED2K
       @thPackRun = false
       @thPack.kill
       true
+    end
+
+    # Get a known client by address. Only one of the parameters needs to be specified.
+    # @param address [Addrinfo] The full address structure of the client.
+    # @param ip [String] The IPv4 address of the client.
+    # @return [Client,nil] The client object if known, `nil` otherwise.
+    def get_client(address: nil, ip: nil)
+      @clients[IPAddr.new(ip || address.ip_address).to_i]
+    end
+
+    # Get a known server by address. Only one of the parameters needs to be specified.
+    # @param address [Addrinfo] The full address structure of the server.
+    # @param ip [String] The IPv4 address of the server.
+    # @return [Server,nil] The server object if known, `nil` otherwise.
+    def get_server(address: nil, ip: nil)
+      @servers[IPAddr.new(ip || address.ip_address).to_i]
     end
 
     # Add a message to the log of this core.
@@ -223,11 +241,31 @@ module ED2K
     # @return [Core]
     attr_reader :core
 
+    # The {Server} or {Client} we are connected to with this connection.
+    # @return [Server,Client]
+    attr_reader :host
+
+    # A {Connection} can be created by either specifying an existing socket, or a host ({Server} or {Client}) to
+    # establish a connection to.
+    # - The first method is used when a peer connects to us while we are listening. In this case, a new host object
+    #   will eventually be created, when we can determine whether it's a server or a client.
+    # - The second method is used when we are the ones connecting to a peer. A new socket will be opened.
+    # Only one has to be specified. When both are specified, the existing socket is used.
+    # @param core [Core] The core this connection will belong to.
+    # @param host [Server,Client] The host to establish a connection to.
     # @param socket [Socket] The underlying `Socket` object handling this connection.
-    def initialize(socket, core)
-      # Underlying system socket, and core container this connection belongs to
-      @socket = socket
-      @core   = core
+    # @raise [RuntimeError] If no valid connection (host or socket) data is supplied.
+    def initialize(core, host: nil, socket: nil)
+      raise "A host or socket needs to be supplied" if !host && !socket
+      @core = core
+      if @socket
+        @socket = socket
+        @host = @core.get_server(address: @socket.remote_address) || @core.get_client(address: @socket.remote_address) || Client.new(connection: self)
+      else
+        @host = host
+        @socket = Socket.new(:INET, :STREAM)
+        connect()
+      end
 
       # Current state of the connection
       @readable = true
@@ -237,10 +275,27 @@ module ED2K
       @read_buffer  = ''
       @write_buffer = ''
 
-      # Queues to hold incoming and outgoing packets
+      # Queues to hold complete incoming and outgoing packets
       @incoming_queue = Queue.new
       @control_queue  = Queue.new
       @standard_queue = Queue.new
+    end
+
+    # Attempt to establish a TCP connection in a non-blocking way. Should only be called when we're the ones initiating
+    # connection and the {@host} member was supplied.
+    # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
+    # @raise [RuntimeError] If no {@host} ({Server} / {Client}) is assigned to this connection.
+    def connect
+      raise "No host to connect to" if !@host
+      @socket.connect_nonblock(@host.address) == 0
+    rescue Errno::EISCONN
+      true   # We are connected
+    rescue Errno::EINPROGRESS, Errno::EALREADY, Errno::EWOULDBLOCK
+      nil    # Connection in progress
+    rescue Errno::ECONNREFUSED
+      false  # The host is unreachable
+    rescue
+      false  # Some other connection error
     end
 
     # Close the underlying socket and free all the resources (system socket, internal R/W buffers, packet queues...)
@@ -403,9 +458,9 @@ module ED2K
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
       case protocol
       when OP_EDONKEYPROT
-        data = parse_edonkey_packet(opcode, packet)
+        data = @host.parse_edonkey_packet(opcode, packet)
       when OP_EMULEPROT
-        data = parse_emule_packet(opcode, packet)
+        data = @host.parse_emule_packet(opcode, packet)
       when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
         @core.log("Received unsupported ed2k protocol #{protocol}")
         return true

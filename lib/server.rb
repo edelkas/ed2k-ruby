@@ -44,23 +44,30 @@ module ED2K
   # more files than the soft limit, so a {Server} object will always remain within that boundary.
   class Server
 
+    # The address structure, containing info such as IP, port, socket type and protocol.
+    # @return [Addrinfo]
+    attr_reader :address
+
     # There are two main ways of creating a new server: If the connection has already been established, it suffices to
     # supply the {Connection} object; otherwise, the IP and Port need to be provided.
     # @param ip [Integer] The public IPv4 address of the server
     # @param port [Integer] The port the server is listening on for incoming connections
     # @param connection [Connection] Supply if the connection has already been established.
+    # @raise [RuntimeError] If no connection info ({Connection} or IP and port) has been supplied.
     def initialize(ip: nil, port: nil, connection: nil)
       # Basic properties we need to establish a connection or send packets
       @connection = connection
       if @connection
-        addr = @connection.socket.remote_address
-        @ip = addr.ip_address
-        @port = addr.ip_port
+        @address = @connection.socket.remote_address
+        @ip      = @address.ip_address
+        @port    = @address.ip_port
+      elsif ip && port
+        @ip      = ip
+        @port    = port
+        @address = Addrinfo.new(Socket.pack_sockaddr_in(@port, @ip))
       else
-        @ip = ip
-        @port = port
+        raise "Suitable connection info (IP/Port or Connection) not supplied"
       end
-      raise "Suitable connection info (IP/Port or Connection) not supplied" if !@ip || !@port
 
       # These properties aren't known until we query the server's status and description
       @name        = ''
