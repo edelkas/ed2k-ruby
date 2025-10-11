@@ -43,31 +43,18 @@ module ED2K
   # **Hard File Limit** is the amount that will get a client disconnected if surpassed. It doesn't make sense to share
   # more files than the soft limit, so a {Server} object will always remain within that boundary.
   class Server
+    include Connection
 
-    # The address structure, containing info such as IP, port, socket type and protocol.
-    # @return [Addrinfo]
-    attr_reader :address
+    # @param ip [String] The public IPv4 address of the server
+    # @param port [Integer] The port the server is listening to for incoming connections
+    # @param core [Core] The core object to use when managing this server
+    def initialize(ip, port, core: nil)
+      @core = core
 
-    # There are two main ways of creating a new server: If the connection has already been established, it suffices to
-    # supply the {Connection} object; otherwise, the IP and Port need to be provided.
-    # @param ip [Integer] The public IPv4 address of the server
-    # @param port [Integer] The port the server is listening on for incoming connections
-    # @param connection [Connection] Supply if the connection has already been established.
-    # @raise [RuntimeError] If no connection info ({Connection} or IP and port) has been supplied.
-    def initialize(ip: nil, port: nil, connection: nil)
       # Basic properties we need to establish a connection or send packets
-      @connection = connection
-      if @connection
-        @address = @connection.socket.remote_address
-        @ip      = @address.ip_address
-        @port    = @address.ip_port
-      elsif ip && port
-        @ip      = ip
-        @port    = port
-        @address = Addrinfo.new(Socket.pack_sockaddr_in(@port, @ip))
-      else
-        raise "Suitable connection info (IP/Port or Connection) not supplied"
-      end
+      @ip      = ip
+      @port    = port
+      @address = Addrinfo.new(Socket.pack_sockaddr_in(@port, @ip))
 
       # These properties aren't known until we query the server's status and description
       @name        = ''

@@ -208,19 +208,23 @@ module ED2K
 
     # Create a new connection and add it for IO monitoring
     def add_connection(socket)
-      @connections[socket.fileno] = Connection.new(socket, self)
+      addr = socket.remote_address
+      host = get_server(address: addr) || get_client(address: addr) || Client.new(socket: socket, core: self)
+      host.setup
+      @connections[socket.fileno] = host
     end
 
     # Stop monitoring a connection and remove the reference to it
     def remove_connection(conn)
-      conn.destroy
+      conn.disconnect
       @connections.delete(conn.socket.fileno)
     end
 
   end # Core
 
-  # Wrapper around a socket that manages I/O and its associated resources. Internally, each connection has 2 buffers
-  # (read and write) as well as 3 thread-safe queues:
+  # Encapsulates the functionality that is common to each node connecting to the ed2k network, that is, both servers and
+  # clients. It's a wrapper around a socket that manages I/O and its associated resources. Internally, each connection has
+  # 2 buffers (read and write) as well as 3 thread-safe queues:
   #
   # - The **incoming** queue stores ed2k packets as they are received from the socket.
   # - The **standard** queue stores outgoing data packets to send through the socket, i.e., the files being uploaded.
@@ -231,7 +235,11 @@ module ED2K
   # Incoming packets are placed in the queue by the socket thread and processed by the packet thread. Conversely, outgoing
   # packets are placed in the queue by the packet thread, to be sent by the socket thread.
   # @todo Add integrity checks to the received packets (correct header...)
-  class Connection
+  module Connection
+
+    # The address structure, containing info such as IP, port, socket type and protocol.
+    # @return [Addrinfo]
+    attr_reader :address
 
     # The underlying `Socket` used by this connection.
     # @return [Socket]
@@ -241,32 +249,10 @@ module ED2K
     # @return [Core]
     attr_reader :core
 
-    # The {Server} or {Client} we are connected to with this connection.
-    # @return [Server,Client]
-    attr_reader :host
-
-    # A {Connection} can be created by either specifying an existing socket, or a host ({Server} or {Client}) to
-    # establish a connection to.
-    # - The first method is used when a peer connects to us while we are listening. In this case, a new host object
-    #   will eventually be created, when we can determine whether it's a server or a client.
-    # - The second method is used when we are the ones connecting to a peer. A new socket will be opened.
-    # Only one has to be specified. When both are specified, the existing socket is used.
-    # @param core [Core] The core this connection will belong to.
-    # @param host [Server,Client] The host to establish a connection to.
-    # @param socket [Socket] The underlying `Socket` object handling this connection.
-    # @raise [RuntimeError] If no valid connection (host or socket) data is supplied.
-    def initialize(core, host: nil, socket: nil)
-      raise "A host or socket needs to be supplied" if !host && !socket
-      @core = core
-      if @socket
-        @socket = socket
-        @host = @core.get_server(address: @socket.remote_address) || @core.get_client(address: @socket.remote_address) || Client.new(connection: self)
-      else
-        @host = host
-        @socket = Socket.new(:INET, :STREAM)
-        connect()
-      end
-
+    # Initialize resources to prepare communication. This includes R/W buffers, packet queues and state variables.
+    # Must be called once before exchanging messages with a server/client, usually right before or after establishing
+    # a connection.
+    def setup
       # Current state of the connection
       @readable = true
       @writable = true
@@ -279,15 +265,17 @@ module ED2K
       @incoming_queue = Queue.new
       @control_queue  = Queue.new
       @standard_queue = Queue.new
+
+      @ready = true
     end
 
-    # Attempt to establish a TCP connection in a non-blocking way. Should only be called when we're the ones initiating
-    # connection and the {@host} member was supplied.
+    # Attempt to establish a TCP connection in a non-blocking way. May be recalled multiple times until we manage to
+    # get a connection. Should only be called when we're the ones initiating the connection.
     # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
-    # @raise [RuntimeError] If no {@host} ({Server} / {Client}) is assigned to this connection.
     def connect
-      raise "No host to connect to" if !@host
-      @socket.connect_nonblock(@host.address) == 0
+      setup() if !@ready
+      @socket = Socket.new(:INET, :STREAM) if !@socket || @socket.closed?
+      @socket.connect_nonblock(@address) == 0
     rescue Errno::EISCONN
       true   # We are connected
     rescue Errno::EINPROGRESS, Errno::EALREADY, Errno::EWOULDBLOCK
@@ -301,7 +289,7 @@ module ED2K
     # Close the underlying socket and free all the resources (system socket, internal R/W buffers, packet queues...)
     # @note This clears the incoming packet queue, so it should only be called when we we've finished processing it or
     #       we no longer care about what's in there.
-    def destroy
+    def disconnect
       # Shutdown each socket end, stop monitoring it for reading or writing,
       # and clear the buffers and packet queues
       close_for_reading(true)
@@ -309,6 +297,7 @@ module ED2K
 
       # Close underlying connection
       @socket.close
+      @socket = nil
     end
 
     # Whether we can read from the socket. In that case, we always monitor it.
@@ -334,24 +323,19 @@ module ED2K
     # there is an incomplete packet and may be safely discarded. Optionally also clears the incoming packet queue,
     # although this can be maintained in order to finish processing them later.
     # @param clear [Boolean] If `true` then the read buffer and queue is cleared, otherwise they're kept.
-    # @return [Boolean] `true` if the connection has been closed for reading, `false` if it was already closed.
     def close_for_reading(clear = false)
-      return false if !@readable
       @readable = false
       @socket.shutdown(Socket::SHUT_RD)
       @read_buffer.clear
-      return true if !clear
+      return if !clear
       @incoming_queue.clear
       @incoming_queue.close
-      true
     end
 
     # Stop writing to a socket, called when the other end of the socket has stopped reading, or when we are done writing.
     # This shuts down the writing end of the socket and marks it to stop monitoring. It also clears the write buffer and
     # the outgoing packet queues, anything in there not sent is discarded.
-    # @return [Boolean] `true` if the connection has been closed for writing, `false` if it was already closed.
     def close_for_writing
-      return false if !@writable
       @writable = false
       @socket.shutdown(Socket::SHUT_WR)
       @write_buffer.clear
@@ -359,14 +343,13 @@ module ED2K
       @control_queue.clear
       @standard_queue.close
       @control_queue.close
-      true
     end
 
     # Write a certain amount of data from the write buffer and the packet queues to the socket. Any packet that is popped
     # from the outgoing queues and not sent completely will remain in the buffer for the next call.
     # @todo Can we prevent so much string slicing here?
     # @param max [Integer] Maximum amount of bytes to put on the socket. Useful for bandwidth management.
-    # @return [Integer] Total amount of bytes actually writen to the socket.
+    # @return [Integer] Total amount of bytes actually writen to the socket, -1 if the socket is closed or broken.
     def write(max)
       sent, written = 0, 0
 
@@ -394,18 +377,20 @@ module ED2K
       end
 
       sent
-    rescue IO::WaitWritable # Cannot write any more
+    rescue IO::WaitWritable                # Cannot write any more
       sent
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
       close_for_writing()
-      sent
+      sent == 0 ? -1 : sent
+    rescue Errno::ESHUTDOWN, IOError       # We closed the socket
+      sent == 0 ? -1 : sent
     end
 
     # Read a certain amount of data from the socket into the read buffer. Any complete packet will be pushed into the
     # incoming packet queue, and the remaining incomplete data will stay in the buffer for the next call.
     # @todo Can we prevent so much string slicing here?
     # @param max [Integer] Maximum amount of bytes to read from the socket. Useful for bandwidth management.
-    # @return [Integer] Total amount of bytes actually read from the socket. If `EOF` or the socket was closed, returns -1.
+    # @return [Integer] Total amount of bytes actually read from the socket, -1 if `EOF` was reached, or the socket is closed or broken.
     def read(max)
       received = @read_buffer.size
 
@@ -421,13 +406,15 @@ module ED2K
       end
 
       received
-    rescue IO::WaitReadable # Nothing to read
+    rescue IO::WaitReadable                # Nothing to read
       0
-    rescue EOFError # Peer stopped writing
+    rescue EOFError                        # Peer stopped writing
       close_for_reading()
       -1
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
       close_for_reading()
+      -1
+    rescue Errno::ESHUTDOWN, IOError       # We closed the socket
       -1
     end
 
@@ -458,9 +445,9 @@ module ED2K
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
       case protocol
       when OP_EDONKEYPROT
-        data = @host.parse_edonkey_packet(opcode, packet)
+        data = parse_edonkey_packet(opcode, packet)
       when OP_EMULEPROT
-        data = @host.parse_emule_packet(opcode, packet)
+        data = parse_emule_packet(opcode, packet)
       when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
         @core.log("Received unsupported ed2k protocol #{protocol}")
         return true
