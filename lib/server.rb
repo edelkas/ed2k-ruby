@@ -27,11 +27,7 @@ module ED2K
   #
   # - For sporadic short-term requests that don't require a connection UDP messages are used instead. This is the case of
   #   *Global Searches*, for instance, which performs a search query in all servers without necessarily being logged in them.
-  #   The eMule extended protocol added several client to client UDP queries added as well, notably
-  #   [Source Exchange](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=137&rm=show_topic),
-  #   which enables a client to query other clients for additional sources for a given file being downloaded. Another
-  #   example is the ability to query for one's [Queue Ranking](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=102&rm=show_topic),
-  #   i.e., the position of our client in another client's upload queue.
+  #   The eMule extended protocol added several client to client UDP queries added as well, see {Client} for more info.
   #
   # Nothing prevents a client from logging in to multiple servers simultaneously, despite the most well-known software,
   # eMule, imposing that restriction. Indeed, other tools like MLDonkey enable it, and likewise, a {Core} can connect to
