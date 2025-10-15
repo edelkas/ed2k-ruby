@@ -473,6 +473,105 @@ module ED2K
       packets
     end
 
+    # Serialize and dump a tag. A tag is an extension of the standard ed2k protocol allowing to add more data to packets
+    # without breaking backwards compatibility, as unknown tags can simply be ignored by clients, since the tag's length
+    # is always known.
+    #
+    # A tag is a triplet formed by a type, an identifier or "name", and the actual value. Not all types are actually used,
+    # such as booleans or "bsobs", whatever those are. The type of the tag is derived automatically from the supplied value.
+    # The tag name can actually be either an integer or a string. Variable-length values are prefixed with its length
+    # (2 bytes for strings, 4 bytes for blobs). The tag name is also prefixed by its length (2 bytes).
+    #
+    # @todo Add support for new-style tags
+    # @param name [Integer,String] The tag "name", which identifies the tag. It can be an integer opcode, or a string name.
+    # @param value [Integer,Float,String] The payload of the tag, its type depends on the tag (`Integer` for integer tags, etc).
+    # @return [String] The resulting serialized tag as a binary string.
+    # @raise [StandardError] If the supplied value has incorrect type.
+    # @see #read_tags
+    def write_tag(name, value)
+      # Tag key
+      if name.is_a?(Integer)
+        key = [1, name].pack('S<C') # Length field is always 1
+      else
+        key = [name.bytesize, name].pack('S<a*')
+      end
+
+      # Dump tag triplet (type, key, value)
+      case value
+      when Integer
+        if size <= 0xFF
+          [TAGTYPE_UINT8, key, value].pack('Ca*C')
+        elsif size <= 0xFFFF
+          [TAGTYPE_UINT16, key, value].pack('Ca*S<')
+        elsif size <= 0xFFFFFFFF
+          [TAGTYPE_UINT32, key, value].pack('Ca*L<')
+        else
+          [TAGTYPE_UINT64, key, value].pack('Ca*Q<')
+        end
+      when String
+        if value.encoding == Encoding::BINARY
+          [TAGTYPE_BLOB, key, value.bytesize, value].pack('Ca*L<a*')
+        else
+          [TAGTYPE_STRING, key, value.bytesize, value].pack('Ca*S<a*')
+        end
+      when Float
+        [TAGTYPE_FLOAT32, key, value].pack('Ca*E')
+      else
+        raise "Invalid tag value type"
+      end
+    end
+
+    # Parse a list of tags. This can can variable length, so a readable stream is to be passed instead of a string.
+    # Reading from the stream will consume bytes.
+    # @note Unknown tag types (bool, bool array, bsob) are consumed but rejected.
+    # @todo Add support for new-style tags.
+    # @param stream [IO] The stream to read from.
+    # @return [Hash] A hash mapping tag names to the corresponding values. Tag names can be integers or strings.
+    # @see #write_tag
+    def read_tags(stream)
+      count = stream.read(4).unpack1('L<')
+      count.times.map{
+        type, length = stream.read(3).unpack('CS<')
+        name = stream.read(length)
+        name = name.ord if length == 1
+        case type
+        when TAGTYPE_UINT8
+          value = stream.read(1).unpack1('C')
+        when TAGTYPE_UINT16
+          value = stream.read(2).unpack1('S<')
+        when TAGTYPE_UINT32
+          value = stream.read(4).unpack1('L<')
+        when TAGTYPE_UINT64
+          value = stream.read(8).unpack1('Q<')
+        when TAGTYPE_FLOAT32
+          value = stream.read(4).unpack1('E')
+        when TAGTYPE_STRING
+          size = stream.read(2).unpack1('S<')
+          value = stream.read(size).force_encoding('UTF-8')
+        when TAGTYPE_BLOB
+          size = stream.read(4).unpack1('L<') # Was a uint16 prior to 0.42e
+          value = stream.read(size).b
+        when TAGTYPE_HASH
+          value = stream.read(16).b
+        when TAGTYPE_BOOL      # Ignore
+          stream.seek(1, IO::SEEK_CUR)
+          next
+        when TAGTYPE_BOOLARRAY # Ignore
+          size = stream.read(2).unpack1('S<')
+          stream.seek(size / 8 + 1, IO::SEEK_CUR)
+          next
+        when TAGTYPE_BSOB      # Ignore
+          size = stream.read(1).unpack1('C')
+          stream.seek(size, IO::SEEK_CUR)
+          next
+        else
+          @core.log("Received unsupported tag type %#.2x" % type)
+          next
+        end
+        [name, value]
+      }.compact.to_h
+    end
+
   end # Connection
 
 end # ED2K

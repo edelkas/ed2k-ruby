@@ -112,6 +112,22 @@ module ED2K
   EMBLOCKSIZE             = 180 * 1024      # Blocks are the secondary file subdivision (180KB). Clients usually request these blocks to other clients.
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
   PACKET_HEADER_SIZE      = 6               # The header of every ed2k packet contains the protocol (char), size (uint32) and opcode (char).
+
+  # ------------ TAGS
+  # Tag types, tag identifiers or "names", and other tag stuff. See {Connection#write_tag} for more info on tags.
+
+
+  TAGTYPE_HASH      0x01 # [Unused]
+  TAGTYPE_STRING    0x02 #   Variable length
+  TAGTYPE_UINT32    0x03 #   4 bytes
+  TAGTYPE_FLOAT32   0x04 #   4 bytes
+  TAGTYPE_BOOL      0x05 # [Unused]
+  TAGTYPE_BOOLARRAY 0x06 # [Unused]
+  TAGTYPE_BLOB      0x07 #   Variable length (eMule 0.44a+)
+  TAGTYPE_UINT16    0x08 #   2 bytes
+  TAGTYPE_UINT8     0x09 #   1 byte
+  TAGTYPE_BSOB      0x0A # [Unused]
+  TAGTYPE_UINT64    0x0B #   8 bytes
 end
 
 require 'ipaddr'
