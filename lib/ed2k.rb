@@ -79,6 +79,8 @@ module ED2K
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via TCP.
 
 
+  OP_LOGINREQUEST = 0x01 # Login to the server (see {Server#login}).
+
   # ------------ CLIENT <-> SERVER UDP OPCODES
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via UDP.
 
@@ -101,6 +103,16 @@ module ED2K
 
   DEFAULT_TCP_PORT = 4662 # TCP port for incoming ed2k connections
   DEFAULT_UDP_PORT = 4666 # UDP port for incoming ed2k and Kad connections
+
+  # ------------ VERSIONING
+  # Used for identifying the version of the eMule client specifically. These values are the last official client ones.
+
+
+  EDONKEYVERSION = 0x3C # Last version of the original eDonkey2000 client
+  VERSION_MJR    =    0 # Major version of eMule
+  VERSION_MIN    =   50 # Minor version of eMule
+  VERSION_UPDATE =    1 # The update is the letter (1 = a, 2 = b...)
+  VERSION_BUILD  =   16 # The build number is purely for debug and unused in practice
 
   # ------------ SIZES
   # Standard part and block sizes for different purposes
@@ -128,6 +140,22 @@ module ED2K
   TAGTYPE_UINT8     0x09 #   1 byte
   TAGTYPE_BSOB      0x0A # [Unused]
   TAGTYPE_UINT64    0x0B #   8 bytes
+
+  # ------------ SERVER CAPABILITIES
+  # Flags sent to the server during login (via CT_SERVER_FLAGS) to communicate the subset of functionalities we support
+  # Protocol obfuscation (a.k.a. crypt layer) was added in eMule v0.47b. It "encrypts" packet data to appear random as
+  # opposed to the usual predictable structure, but it doesn't provide real privacy, just a layer against simple network filters.
+
+
+  SRVCAP_ZLIB         = 0x0001 # Support compressed packets (via OP_PACKEDPROT protocol)
+  SRVCAP_IP_IN_LOGIN  = 0x0002 # We send our own IP during login (unused)
+  SRVCAP_AUXPORT      = 0x0004 # ? (unused)
+  SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Server#write_tag})
+  SRVCAP_UNICODE      = 0x0010 # Support for Unicode strings
+  SRVCAP_LARGEFILES   = 0x0100 # Support for 64 bit file sizes (>4GB)
+  SRVCAP_SUPPORTCRYPT = 0x0200 # Support for obfuscated connections
+  SRVCAP_REQUESTCRYPT = 0x0400 # Request obfuscated connections to servers and clients, but allow fallback to non-obfuscated ones
+  SRVCAP_REQUIRECRYPT = 0x0800 # Enforce obfuscated connectons, reject any clients and servers which don't support it, and plaintext connections
 end
 
 require 'ipaddr'

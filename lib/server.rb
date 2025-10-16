@@ -66,5 +66,66 @@ module ED2K
       @obfuscation = false
     end
 
+    # Send login request to the server. We communicate basic information about ourselves, as well as client capabilities
+    # and versioning. You don't really need to change any of the options in most scenarios.
+    #
+    # This should be the first packet we send to a server after establishing a TCP connection. After this, the server will
+    # try to establish a *different* TCP connection to us on the specified port to determine if we're reachable and thus
+    # should be assigned a **high ID**, otherwise we'll be assigned a **low ID**. Either way, if login is succesful we'll
+    # receive an `IDCHANGE` packet with our assigned ID. At this point we can consider the login process finished and start
+    # sending other packets. The server can send us further notices via the `SERVERMESSAGE` packet, including if our login
+    # was rejected. There's also a specific `REJECT` packet sent when any query is rejected.
+    # @note Some options, like compression or protocol obfuscation, can't be enabled for now because they aren't supported yet.
+    # @param hash [String] Our 16-byte client hash that identifies us in the network
+    # @param name [String] Our nickname as it shows to other clients
+    # @param port [Integer] The TCP port we are listening to for incoming connections from the server and other clients
+    # @param id [Integer] Our client ID. This is assigned by the server itself, so its usually 0 the first time we connect.
+    # @param support_compression [Boolean] If we support compressed packets via the packed protocol ({OP_PACKEDPROT}). **Currently not available**.
+    # @param support_newtags [Boolean] If we support new-style Lugdunum tags (see {#write_tag}).
+    # @param support_largefiles [Boolean] If we support 64 bit file sizes (i.e. >4GB).
+    # @param support_unicode [Boolean] If we support Unicode strings for filenames, nicknames, etc.
+    # @param support_obfuscation [Boolean] If we support protocol obfuscation. **Currently not available**.
+    # @param request_obfuscation [Boolean] If we also request other clients to use it when connecting to us. **Currently not available**.
+    # @param require_obfuscation [Boolean] If we reject non-obfuscated connections. **Currently not available**.
+    # @param version_major [Integer] Major eMule version (7 bits, 0-99). Default: `0` (see {VERSION_MJR}).
+    # @param version_minor [Integer] Minor eMule version (7 bits, 0-99). Default: `50` (see {VERSION_MIN}).
+    # @param version_update [Integer] Version update (3 bits, 0-5). Default: `1` (see {VERSION_UPDATE}).
+    # @param version_edonkey [Integer] Underlying eDonkey2000 client version. Default: `60` (see {EDONKEYVERSION}).
+    def login(
+      hash, name, port, id: 0,
+      support_compression: false, support_newtags: true, support_largefiles: true, support_unicode: true,
+      support_obfuscation: false, request_obfuscation: false, require_obfuscation: false,
+      version_major: VERSION_MJR, version_minor: VERSION_MIN, version_update: VERSION_UPDATE, version_edonkey: EDONKEYVERSION
+    )
+      # We don't support compressed packets nor protocol obfuscation for now
+      support_compression = false
+      support_obfuscation = false
+      request_obfuscation = false
+      require_obfuscation = false
+
+      # Basic user info
+      tag_count = 4
+      data = [hash, id, port, tag_count].pack('a16L<S<L<')
+      data << write_tag(CT_NAME, name)
+      data << write_tag(CT_VERSION, version_edonkey)
+
+      # Client capabilities
+      flags = 0
+      flags |= SRVCAP_ZLIB         if support_compression
+      flags |= SRVCAP_NEWTAGS      if support_newtags
+      flags |= SRVCAP_LARGEFILES   if support_largefiles
+      flags |= SRVCAP_UNICODE      if support_unicode
+      flags |= SRVCAP_SUPPORTCRYPT if support_obfuscation
+      flags |= SRVCAP_REQUESTCRYPT if request_obfuscation
+      flags |= SRVCAP_REQUIRECRYPT if require_obfuscation
+      data << write_tag(CT_SERVER_FLAGS, flags)
+
+      # Versioning info
+      version = version_major << 17 | version_minor << 10 | version_update << 7
+      data << write_tag(CT_EMULE_VERSION, version)
+
+      queue_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
+    end
+
   end # Server
 end # ED2K
