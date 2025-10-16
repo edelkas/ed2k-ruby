@@ -478,62 +478,77 @@ module ED2K
     # is always known.
     #
     # A tag is a triplet formed by a type, an identifier or "name", and the actual value. Not all types are actually used,
-    # such as booleans or "bsobs", whatever those are. The type of the tag is derived automatically from the supplied value.
+    # such as booleans or "bsobs", whatever those are. Here, the type is derived automatically from the supplied value.
     # The tag name can actually be either an integer or a string. Variable-length values are prefixed with its length
     # (2 bytes for strings, 4 bytes for blobs). The tag name is also prefixed by its length (2 bytes).
     #
-    # @todo Add support for new-style tags
+    # Lugdunum servers added more compact new-style tags which omit the length field. These can be detected by testing the
+    # highest bit of the type, which is normally unused. For short string tags, even the string length can be encoded
+    # in the type byte, further reducing the tag size by 4 bytes total. New-style tag names must be integers, not strings.
+    # The uint8 and uint16 types are only used with new-style tags. New-style are never really sent by eMule, only for
+    # storing in files, but they might be received from the server, mainly from search results, which have many tags.
+    #
     # @param name [Integer,String] The tag "name", which identifies the tag. It can be an integer opcode, or a string name.
     # @param value [Integer,Float,String] The payload of the tag, its type depends on the tag (`Integer` for integer tags, etc).
     # @return [String] The resulting serialized tag as a binary string.
     # @raise [StandardError] If the supplied value has incorrect type.
-    # @see #read_tags
-    def write_tag(name, value)
+    def write_tag(name, value, new = false)
       # Tag key
       if name.is_a?(Integer)
-        key = [1, name].pack('S<C') # Length field is always 1
+        key = new ? name.chr : [1, name].pack('S<C') # Length field is always 1
       else
         key = [name.bytesize, name].pack('S<a*')
       end
+      switch = new ? 0x80 : 0x00 # Toggle type's highest bit to indicate new-style tag
 
       # Dump tag triplet (type, key, value)
       case value
       when Integer
-        if size <= 0xFF
-          [TAGTYPE_UINT8, key, value].pack('Ca*C')
-        elsif size <= 0xFFFF
-          [TAGTYPE_UINT16, key, value].pack('Ca*S<')
+        if size <= 0xFF && new
+          [TAGTYPE_UINT8 | switch, key, value].pack('Ca*C')
+        elsif size <= 0xFFFF && new
+          [TAGTYPE_UINT16 | switch, key, value].pack('Ca*S<')
         elsif size <= 0xFFFFFFFF
-          [TAGTYPE_UINT32, key, value].pack('Ca*L<')
+          [TAGTYPE_UINT32 | switch, key, value].pack('Ca*L<')
         else
-          [TAGTYPE_UINT64, key, value].pack('Ca*Q<')
+          [TAGTYPE_UINT64 | switch, key, value].pack('Ca*Q<')
         end
       when String
+        length = value.bytesize
         if value.encoding == Encoding::BINARY
-          [TAGTYPE_BLOB, key, value.bytesize, value].pack('Ca*L<a*')
+          [TAGTYPE_BLOB | switch, key, length, value].pack('Ca*L<a*')
+        elsif length <= 16 && new
+          [16 + length | switch, key, value].pack('Ca*a*')
         else
-          [TAGTYPE_STRING, key, value.bytesize, value].pack('Ca*S<a*')
+          [TAGTYPE_STRING | switch, key, length, value].pack('Ca*S<a*')
         end
       when Float
-        [TAGTYPE_FLOAT32, key, value].pack('Ca*E')
+        [TAGTYPE_FLOAT32 | switch, key, value].pack('Ca*E')
       else
         raise "Invalid tag value type"
       end
     end
 
     # Parse a list of tags. This can can variable length, so a readable stream is to be passed instead of a string.
-    # Reading from the stream will consume bytes.
+    # Reading from the stream will consume bytes. See {#write_tag} for more info on tags.
     # @note Unknown tag types (bool, bool array, bsob) are consumed but rejected.
-    # @todo Add support for new-style tags.
     # @param stream [IO] The stream to read from.
     # @return [Hash] A hash mapping tag names to the corresponding values. Tag names can be integers or strings.
-    # @see #write_tag
     def read_tags(stream)
       count = stream.read(4).unpack1('L<')
       count.times.map{
-        type, length = stream.read(3).unpack('CS<')
-        name = stream.read(length)
-        name = name.ord if length == 1
+        # Parse type and name (old-style vs new-style tags)
+        type = stream.read(1).unpack1('C')
+        if type >> 7 & 1 == 1 # Highest bit set => New-style tag
+          type &= 0x7F
+          name = stream.read(1).unpack1('C')
+        else
+          length = stream.read(2).unpack1('S<')
+          name = stream.read(length)
+          name = name.ord if length == 1
+        end
+
+        # Parse value
         case type
         when TAGTYPE_UINT8
           value = stream.read(1).unpack1('C')
@@ -564,10 +579,14 @@ module ED2K
           size = stream.read(1).unpack1('C')
           stream.seek(size, IO::SEEK_CUR)
           next
+        when 0x11..0x20
+          value = stream.read(type - 16).force_encoding('UTF-8')
         else
           @core.log("Received unsupported tag type %#.2x" % type)
           next
         end
+
+        # Map names to values in a hash
         [name, value]
       }.compact.to_h
     end
