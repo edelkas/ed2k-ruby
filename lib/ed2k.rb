@@ -75,11 +75,17 @@ module ED2K
   OP_KADEMLIAHEADER     = 0xE4 # Kademlia protocol (serverless)
   OP_KADEMLIAPACKEDPROT = 0xE5 # Kademlia protocol (deflated / gzipped)
 
-  # ------------ CLIENT <-> SERVER TCP OPCODES
-  # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via TCP.
+  # ------------ CLIENT -> SERVER TCP OPCODES
+  # Original operations of the eDonkey protocol, sent by the client with OP_EDONKEYPROT via TCP.
 
 
   OP_LOGINREQUEST = 0x01 # Login to the server (see {Server#login}).
+
+  # ------------ SERVER -> CLIENT TCP OPCODES
+  # Original operations of the eDonkey protocol, sent by the server with OP_EDONKEYPROT via TCP.
+
+
+  OP_SERVERMESSAGE = 0x38 # Notices sent by the server.
 
   # ------------ CLIENT <-> SERVER UDP OPCODES
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via UDP.
@@ -129,17 +135,17 @@ module ED2K
   # Tag types, tag identifiers or "names", and other tag stuff. See {Connection#write_tag} for more info on tags.
 
 
-  TAGTYPE_HASH      0x01 # [Unused]
-  TAGTYPE_STRING    0x02 #   Variable length
-  TAGTYPE_UINT32    0x03 #   4 bytes
-  TAGTYPE_FLOAT32   0x04 #   4 bytes
-  TAGTYPE_BOOL      0x05 # [Unused]
-  TAGTYPE_BOOLARRAY 0x06 # [Unused]
-  TAGTYPE_BLOB      0x07 #   Variable length (eMule 0.44a+)
-  TAGTYPE_UINT16    0x08 #   2 bytes
-  TAGTYPE_UINT8     0x09 #   1 byte
-  TAGTYPE_BSOB      0x0A # [Unused]
-  TAGTYPE_UINT64    0x0B #   8 bytes
+  TAGTYPE_HASH      = 0x01 # [Unused]
+  TAGTYPE_STRING    = 0x02 #   Variable length
+  TAGTYPE_UINT32    = 0x03 #   4 bytes
+  TAGTYPE_FLOAT32   = 0x04 #   4 bytes
+  TAGTYPE_BOOL      = 0x05 # [Unused]
+  TAGTYPE_BOOLARRAY = 0x06 # [Unused]
+  TAGTYPE_BLOB      = 0x07 #   Variable length (eMule 0.44a+)
+  TAGTYPE_UINT16    = 0x08 #   2 bytes
+  TAGTYPE_UINT8     = 0x09 #   1 byte
+  TAGTYPE_BSOB      = 0x0A # [Unused]
+  TAGTYPE_UINT64    = 0x0B #   8 bytes
 
   # ------------ SERVER CAPABILITIES
   # Flags sent to the server during login (via CT_SERVER_FLAGS) to communicate the subset of functionalities we support
