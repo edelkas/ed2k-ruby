@@ -68,6 +68,9 @@ module ED2K
 
     # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
     # that the custom handlers can consume it.
+    # @param opcode [Integer] The packet's identifying opcode.
+    # @param packet [Strng] The packet's payload, without the header.
+    # @return Packet-specific processed payload.
     def parse_edonkey_packet(opcode, packet)
       case opcode
       when OP_SERVERMESSAGE
@@ -79,10 +82,12 @@ module ED2K
 
     # Informative notices sent by the server. A packet can contain multiple messages separated by new lines.
     # Some standard ones have special meanings:
+    #
     # - `ERROR: ...` -> An error message, usually printed red by eMule.
     # - `WARNING: ...` -> A warning message, usually printed purple by eMule.
     # - `server version xx.xx` -> The version of eserver running, nowadays usually 17.15.
-    # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use a hostname because their IP is dynamic and thus subject to change.
+    # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use DNS because their IP is dynamic and thus subject to change
+    #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
     # @param packet [String] The raw packet payload.
     # @return [Array<String>] The messages in this packet.
     def parse_server_message(packet)
