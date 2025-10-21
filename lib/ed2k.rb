@@ -168,6 +168,9 @@ require 'ipaddr'
 require 'socket'
 require 'thread'
 
-require_relative 'server.rb'
 require_relative 'core.rb'
+require_relative 'server.rb'
+require_relative 'client.rb'
 require_relative 'hash.rb'
+
+require_relative 'ced2k'

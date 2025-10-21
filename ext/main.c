@@ -4,7 +4,7 @@
  * Entry point of the library.
  * This function gets called when it gets required in Ruby
  */
-void Init_ced2k() {
+void Init_ced2k(void) {
     rb_define_global_const("C_ED2K", LONG2FIX(1));
     VALUE m_ed2k = rb_const_get(rb_cObject, rb_intern("ED2K"));
     VALUE m_hash = rb_const_get(m_ed2k, rb_intern("Hash"));

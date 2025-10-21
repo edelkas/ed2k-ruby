@@ -294,7 +294,7 @@ bool md4_file(unsigned char* out, const char* filename) {
 	MD4_Init(&ctx);
 	unsigned char *buf = (unsigned char*) malloc(CHUNK_SIZE);
 	size_t size;
-	while (size = fread(buf, 1, CHUNK_SIZE, fp)) MD4_Update(&ctx, buf, size);
+	while ((size = fread(buf, 1, CHUNK_SIZE, fp))) MD4_Update(&ctx, buf, size);
 	MD4_Final(out, &ctx);
 	fclose(fp);
 	free(buf);

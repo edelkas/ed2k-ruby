@@ -10,13 +10,13 @@
 #include "ruby.h"
 
 /* Entry point */
-void Init_ced2k();
+void Init_ced2k(void);
 
 /* Gem functions */
 VALUE md4(VALUE self, VALUE data);
 
 /* Internal functions */
-void md4_string(unsigned char* out, unsigned char* in, size_t size);
+void md4_data(unsigned char* out, unsigned char* in, size_t size);
 bool md4_file(unsigned char* out, const char* filename);
 
 #endif
