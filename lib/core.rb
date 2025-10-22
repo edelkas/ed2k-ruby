@@ -44,12 +44,14 @@ module ED2K
       start_packet_thread()
 
       @init = true
+      log("Initialized core")
     end
 
     # Read user preferences from disk and fill the missing ones with the default values
     def reload_preferences
       @tcp_port = DEFAULT_TCP_PORT
       @udp_port = DEFAULT_UDP_PORT
+      log("Loaded preferences")
     end
 
     # Starts the socket thread and begins monitoring network IO.
@@ -61,6 +63,7 @@ module ED2K
       @thSockFreq = DEFAULT_THREAD_FREQUENCY
       @thSockTick = Time.now
       @thSock = Thread.new{ run_socket_thread() }
+      log("Started socket thread")
     end
 
     # Starts the packet thread and begins monitoring incoming packets to be parsed
@@ -72,6 +75,7 @@ module ED2K
       @thPackFreq = DEFAULT_THREAD_FREQUENCY
       @thPackTick = Time.now
       @thPack = Thread.new{ run_packet_thread() }
+      log("Started packet thread")
     end
 
     # Attempts to stop the socket thread gracefully and end network monitoring. It will wait until the current loop is
@@ -209,7 +213,15 @@ module ED2K
     # Create a new connection and add it for IO monitoring
     def add_connection(socket)
       addr = socket.remote_address
-      host = get_server(address: addr) || get_client(address: addr) || Client.new(socket: socket, core: self)
+      ip = "%s:%d" % [addr.ip_address, addr.ip_port]
+      if host = get_server(address: addr)
+        log("Received new incoming connection from known server #{ip}")
+      elsif host = get_client(address: addr)
+        log("Received new incoming connection from known client #{ip}")
+      else
+        log("Found new client #{ip}")
+        host = Client.new(socket: socket, core: self)
+      end
       host.setup
       @connections[socket.fileno] = host
     end
@@ -275,14 +287,18 @@ module ED2K
     def connect
       setup() if !@ready
       @socket = Socket.new(:INET, :STREAM) if !@socket || @socket.closed?
+      @core.log("Connecting to #{format_name()}...")
       @socket.connect_nonblock(@address) == 0
     rescue Errno::EISCONN
+      @core.log("Connected to #{format_name()}")
       true   # We are connected
     rescue Errno::EINPROGRESS, Errno::EALREADY, Errno::EWOULDBLOCK
       nil    # Connection in progress
     rescue Errno::ECONNREFUSED
+      @core.log("Failed to connect to #{format_name()}")
       false  # The host is unreachable
     rescue
+      @core.log("Unknown error connecting to #{format_name()}")
       false  # Some other connection error
     end
 
@@ -296,6 +312,7 @@ module ED2K
       close_for_writing()
 
       # Close underlying connection
+      @core.log("Disconnected from #{format_name()}")
       @socket.close
       @socket = nil
     end
@@ -428,6 +445,7 @@ module ED2K
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size, opcode].pack('CL<C')))
+      @core.log("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
       true
     end
 

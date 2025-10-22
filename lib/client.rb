@@ -66,5 +66,13 @@ module ED2K
       @supports_obfuscation  = false
       @supports_secure_ident = false
     end
+
+    # Format the client's name in human-readable form
+    # @return [String] `ID@IP:Port 'Name'`
+    def format_name
+      ip = @address ? "%s:%d" % [@address.ip_address, @address.ip_port] : '?'
+      name = @name || '?'
+      "#{@id}@#{ip} '#{name}'"
+    end
   end
 end

@@ -66,6 +66,13 @@ module ED2K
       @obfuscation = false
     end
 
+    # Format the server's name in human-readable form
+    # @return [String] Nick (IP:Port)
+    def format_name
+      ip = "%s:%d" % [@address.ip_address, @address.ip_port]
+      @name ? "#{@name} (#{ip})" : ip
+    end
+
     # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
     # that the custom handlers can consume it.
     # @param opcode [Integer] The packet's identifying opcode.
@@ -76,7 +83,7 @@ module ED2K
       when OP_SERVERMESSAGE
         parse_server_message(packet)
       else
-        @core.log("Received unsupported server edonkey packet %#.2x" % opcode)
+        @core.log("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
       end
     end
 
@@ -92,7 +99,9 @@ module ED2K
     # @return [Array<String>] The messages in this packet.
     def parse_server_message(packet)
       length, messages = packet.unpack('S<A*')
-      messages.split("\r\n").map(&:strip)
+      messages.split("\r\n").map(&:strip).each{ |msg|
+        @core.log("Received server message from #{format_name()}: #{msg}")
+      }
     end
 
 
@@ -155,6 +164,7 @@ module ED2K
       data << write_tag(CT_EMULE_VERSION, version)
 
       queue_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
+      @core.log("Sent login request to #{format_name()}")
     end
 
   end # Server
