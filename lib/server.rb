@@ -41,6 +41,11 @@ module ED2K
   class Server
     include Connection
 
+    # The processed payload of an IDCHANGE packet (see {#parse_id_change}). Note that the IP and ports are optional
+    # and might be `nil`. The capability flags (`support_...`) should always be there for "modern" (16.44+) servers.
+    IdChangeStruct = Struct.new(:server, :id, :ip, :port, :obfuscated_port, :support_compression, :support_newtags,
+      :support_unicode, :support_related, :support_filetypes, :support_largefiles, :support_obfuscation)
+
     # @param ip [String] The public IPv4 address of the server
     # @param port [Integer] The port the server is listening to for incoming connections
     # @param core [Core] The core object to use when managing this server
@@ -76,12 +81,14 @@ module ED2K
     # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
     # that the custom handlers can consume it.
     # @param opcode [Integer] The packet's identifying opcode.
-    # @param packet [Strng] The packet's payload, without the header.
+    # @param packet [String] The packet's payload, without the header.
     # @return Packet-specific processed payload.
     def parse_edonkey_packet(opcode, packet)
       case opcode
       when OP_SERVERMESSAGE
         parse_server_message(packet)
+      when OP_IDCHANGE
+        parse_id_change(packet)
       else
         @core.log("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
       end
@@ -104,6 +111,27 @@ module ED2K
       }
     end
 
+    # Received whenever our session ID changes in the server. This usually only happens when we log into the server, and
+    # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
+    # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
+    # @param packet [String] The raw payload.
+    # @return [IdChangeStruct] The processed payload.
+    def parse_id_change(packet)
+      id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
+      flags ||= 0
+      @core.log("Received new ID from #{format_name()}: #{id}")
+      @core.log("Our IP is #{[ip].pack('L>').unpack('C4').join('.')}") if ip
+      IdChangeStruct.new(
+        self, id, ip, port, obfuscated_port,
+        flags & SRV_TCPFLG_COMPRESSION    > 0,
+        flags & SRV_TCPFLG_NEWTAGS        > 0,
+        flags & SRV_TCPFLG_UNICODE        > 0,
+        flags & SRV_TCPFLG_RELATEDSEARCH  > 0,
+        flags & SRV_TCPFLG_TYPETAGINTEGER > 0,
+        flags & SRV_TCPFLG_LARGEFILES     > 0,
+        flags & SRV_TCPFLG_TCPOBFUSCATION > 0
+      )
+    end
 
     # Send login request to the server. We communicate basic information about ourselves, as well as client capabilities
     # and versioning. You don't really need to change any of the options in most scenarios.

@@ -86,6 +86,7 @@ module ED2K
 
 
   OP_SERVERMESSAGE = 0x38 # Notices sent by the server.
+  OP_IDCHANGE      = 0x40 # The ID we've been assigned in this session
 
   # ------------ CLIENT <-> SERVER UDP OPCODES
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via UDP.
@@ -162,6 +163,19 @@ module ED2K
   SRVCAP_SUPPORTCRYPT = 0x0200 # Support for obfuscated connections
   SRVCAP_REQUESTCRYPT = 0x0400 # Request obfuscated connections to servers and clients, but allow fallback to non-obfuscated ones
   SRVCAP_REQUIRECRYPT = 0x0800 # Enforce obfuscated connectons, reject any clients and servers which don't support it, and plaintext connections
+
+  # ------------ SERVER TCP FLAGS
+  # These flags are sent by the server to communicate the capabilities they support. They are essentially the same as the
+  # above server capabilities, although a slightly different subset of them.
+
+
+  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol
+  SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag})
+  SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings
+  SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files
+  SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type
+  SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (>4GB)
+  SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP
 end
 
 require 'ipaddr'
