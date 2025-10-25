@@ -94,14 +94,8 @@ module ED2K
       end
     end
 
-    # Informative notices sent by the server. A packet can contain multiple messages separated by new lines.
-    # Some standard ones have special meanings:
-    #
-    # - `ERROR: ...` -> An error message, usually printed red by eMule.
-    # - `WARNING: ...` -> A warning message, usually printed purple by eMule.
-    # - `server version xx.xx` -> The version of eserver running, nowadays usually 17.15.
-    # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use DNS because their IP is dynamic and thus subject to change
-    #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
+    # Received when the server sends us messages. A packet can contain multiple messages separated by new lines.
+    # @see Core#handle_server_messages
     # @param packet [String] The raw packet payload.
     # @return [Array<String>] The messages in this packet.
     def parse_server_message(packet)
@@ -111,9 +105,8 @@ module ED2K
       }
     end
 
-    # Received whenever our session ID changes in the server. This usually only happens when we log into the server, and
-    # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
-    # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
+    # Received whenever our session ID changes in the server.
+    # @see Core#handle_id_change
     # @param packet [String] The raw payload.
     # @return [IdChangeStruct] The processed payload.
     def parse_id_change(packet)

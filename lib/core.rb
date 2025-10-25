@@ -124,6 +124,35 @@ module ED2K
       true
     end
 
+    # Add a handler for the server message packet.
+    # These are informative notices sent by the server, each packet can contain multiple ones.
+    # Some standard ones have special meanings:
+    #
+    # - `ERROR: ...` -> An error message, usually printed red by eMule.
+    # - `WARNING: ...` -> A warning message, usually printed purple by eMule.
+    # - `server version xx.xx` -> The version of eserver running, nowadays usually 17.15.
+    # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use DNS because their IP is dynamic and thus subject to change
+    #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
+    # @see Server#parse_server_message
+    # @yield Server message packet content
+    # @yieldparam messages [Array<String>] The list of messages contained in the packet.
+    # @return [Proc] The resulting handler
+    def handle_server_messages(&handler)
+      @handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
+    end
+
+    # Add a handler for the server ID change packet.
+    # Received whenever our session ID changes in the server. This usually only happens when we log into the server, and
+    # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
+    # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
+    # @see Server#parse_id_change
+    # @yield Server message packet content
+    # @yieldparam messages [Array<String>] The list of messages contained in the packet.
+    # @return [Proc] The resulting handler
+    def handle_id_change(&handler)
+      @handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
+    end
+
     # Get a known client by address. Only one of the parameters needs to be specified.
     # @param address [Addrinfo] The full address structure of the client.
     # @param ip [String] The IPv4 address of the client.
@@ -475,7 +504,8 @@ module ED2K
       end
 
       # Run the custom handler
-      @core.handlers[protocol][opcode].call(data)
+      @core.handlers&.[](protocol)&.[](opcode)&.call(data)
+      true
     end
 
     # Consumes and processes all the currently pending packets from the incoming queue
