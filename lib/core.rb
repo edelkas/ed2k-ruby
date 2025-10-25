@@ -125,7 +125,7 @@ module ED2K
     end
 
     # Add a handler for the server list packet. It contains a server's list of other known servers as (IP, Port) pairs.
-    # This packet is only sent on command and is requested with {Server#send_server_list_request}.
+    # This packet is only sent as a response to {Server#send_server_list_request}.
     # @see Server#parse_server_list
     # @see Server#send_server_list_request
     # @yield Server list packet content
@@ -161,7 +161,7 @@ module ED2K
     # @yieldparam server [Server] The server that sent this packet.
     # @yieldparam payload [Server::ServerMessageStruct] Contains the list of messages.
     # @return [Proc] The resulting handler
-    def handle_server_messages(&handler)
+    def handle_server_message(&handler)
       @handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
     end
 
@@ -176,6 +176,18 @@ module ED2K
     # @return [Proc] The resulting handler
     def handle_id_change(&handler)
       @handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
+    end
+
+    # Add a handler for the server identification packet. It contains the hash (a sort of GUID to identify the server),
+    # the IP address and port to connect to it, and its name and short description. This packet is sent as a response to
+    # {Server#send_server_list_request}.
+    # @see Server#parse_server_identification
+    # @yield Server identification packet content
+    # @yieldparam server [Server] The server that sent this packet.
+    # @yieldparam payload [Server::ServerIdentificationStruct] Contains the server's hash, IP, port, name and description.
+    # @return [Proc] The resulting handler
+    def handle_server_identification(&handler)
+      @handlers[OP_EDONKEYPROT][OP_SERVERIDENT] = handler
     end
 
     # Get a known client by address. Only one of the parameters needs to be specified.
@@ -602,12 +614,12 @@ module ED2K
       end
     end
 
-    # Parse a list of tags. This can can variable length, so a readable stream is to be passed instead of a string.
-    # Reading from the stream will consume bytes. See {#write_tag} for more info on tags.
+    # Parse a list of tags. See {#write_tag} for more info on tags.
     # @note Unknown tag types (bool, bool array, bsob) are consumed but rejected.
-    # @param stream [IO] The stream to read from.
+    # @param data [String] The raw binary data to unpack the tags from.
     # @return [Hash] A hash mapping tag names to the corresponding values. Tag names can be integers or strings.
-    def read_tags(stream)
+    def read_tags(data)
+      stream = StringIO.new(data)
       count = stream.read(4).unpack1('L<')
       count.times.map{
         # Parse type and name (old-style vs new-style tags)
@@ -662,6 +674,8 @@ module ED2K
         # Map names to values in a hash
         [name, value]
       }.compact.to_h
+    rescue
+      nil
     end
 
   end # Connection

@@ -90,6 +90,7 @@ module ED2K
   OP_SERVERSTATUS  = 0x34 # Current user and file count
   OP_SERVERMESSAGE = 0x38 # Notices sent by the server.
   OP_IDCHANGE      = 0x40 # The ID we've been assigned in this session
+  OP_SERVERIDENT   = 0x41 # Information about the server (hash, IP, port, name, description)
 
   # ------------ CLIENT <-> SERVER UDP OPCODES
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via UDP.
@@ -180,6 +181,32 @@ module ED2K
   SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (>4GB)
   SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP
 
+  # ------------ SERVER TAGS
+  # These tags are used to identify different attributes of a server. They're sent in some packets, such as OP_SERVERIDENT,
+  # and stored in the server.met file.
+
+
+  ST_SERVERNAME         = 0x01 # [String] Server name
+  ST_DESCRIPTION        = 0x0B # [String] Server description
+  ST_PING               = 0x0C # [uint32] Ping in milliseconds
+  ST_FAIL               = 0x0D # [uint32] Number of connection errors since last succesfull connection
+  ST_PREFERENCE         = 0x0E # [uint32] Connection priority ()
+  ST_PORT               = 0x0F # [uint32] Server port (yes, it's sent with a full 4 bytes)
+  ST_IP                 = 0x10 # [uint32] Server IPv4 address
+  ST_DYNIP              = 0x85 # [String] DNS for servers using dynamic IPs
+  ST_MAXUSERS           = 0x87 # [uint32] Maximum amount of users the server supports
+  ST_SOFTFILES          = 0x88 # [uint32] Soft file limit, past which further offered files are ignored
+  ST_HARDFILES          = 0x89 # [uint32] Hard file limit, past which a user gets kicked from the server
+  ST_LASTPING           = 0x90 # [uint32] Last time we pinged the server
+  ST_VERSION            = 0x91 # [uint32] Version of eserver being ran (can also be a string), generally 17.15
+  ST_UDPFLAGS           = 0x92 # [uint32] Server capabilities packet as a bitfield
+  ST_AUXPORTSLIST       = 0x93 # [String] List of additional ports (comma-separated) in case the main one isn't available (unused)
+  ST_LOWIDUSERS         = 0x94 # [uint32] Count of connected clients with low ID (unreachable)
+  ST_UDPKEY             = 0x95 # [uint32]
+  ST_UDPKEYIP           = 0x96 # [uint32]
+  ST_TCPPORTOBFUSCATION = 0x97 # [uint16] TCP port for obfuscated connections
+  ST_UDPPORTOBFUSCATION = 0x98 # [uint16] UDP port for obfuscated connections
+
   # Format an IPv4 into human-readable form.
   # @param ip [Integer] The IP as received from the network
   # @return [String] The formatted IP
@@ -190,6 +217,7 @@ end
 
 require 'ipaddr'
 require 'socket'
+require 'stringio'
 require 'thread'
 
 require_relative 'core.rb'

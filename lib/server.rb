@@ -41,19 +41,23 @@ module ED2K
   class Server
     include Connection
 
-    # The processed payload of a SERVERLIST packet (see {#parse_server_list})
+    # The processed payload of an {OP_SERVERLIST} packet (see {Core#handle_server_list} and {#parse_server_list}).
     ServerListStruct = Struct.new(:servers)
 
-    # The processed payload of a SERVERSTATUS packet (see {#parse_server_status}).
+    # The processed payload of an {OP_SERVERSTATUS} packet (see {Core#handle_server_status} and {#parse_server_status}).
     ServerStatusStruct = Struct.new(:users, :files)
 
-    # The processed payload of a SERVERMESSAGE packet (see {#parse_server_message})
+    # The processed payload of an {OP_SERVERMESSAGE} packet (see {Core#handle_server_message} and {#parse_server_message}).
     ServerMessageStruct = Struct.new(:messages)
 
-    # The processed payload of an IDCHANGE packet (see {#parse_id_change}). Note that the IP and ports are optional
-    # and might be `nil`. The capability flags (`support_...`) should always be there for "modern" (16.44+) servers.
+    # The processed payload of an {OP_IDCHANGE} packet (see {Core#handle_id_change} and {#parse_id_change}).
+    # Note that the IP and ports are optional and might be `nil`. The capability flags (`support_...`) should always
+    # be there for "modern" (16.44+) servers.
     IdChangeStruct = Struct.new(:server, :id, :ip, :port, :obfuscated_port, :support_compression, :support_newtags,
       :support_unicode, :support_related, :support_filetypes, :support_largefiles, :support_obfuscation)
+
+    # The processed payload of an {OP_SERVERIDENT} packet (see {Core#handle_server_identification} and {#parse_server_identification})
+    ServerIdentificationStruct = Struct.new(:hash, :ip, :port, :name, :description)
 
     # @param ip [String] The public IPv4 address of the server
     # @param port [Integer] The port the server is listening to for incoming connections
@@ -102,6 +106,8 @@ module ED2K
         parse_server_message(packet)
       when OP_IDCHANGE
         parse_id_change(packet)
+      when OP_SERVERIDENT
+        parse_server_identification(packet)
       else
         @core.log("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
         nil
@@ -135,7 +141,7 @@ module ED2K
     end
 
     # Received when the server sends us messages. A packet can contain multiple messages separated by new lines.
-    # @see Core#handle_server_messages
+    # @see Core#handle_server_message
     # @param packet [String] The raw payload.
     # @return [ServerMessageStruct] The processed payload.
     def parse_server_message(packet)
@@ -165,6 +171,26 @@ module ED2K
         flags & SRV_TCPFLG_LARGEFILES     > 0,
         flags & SRV_TCPFLG_TCPOBFUSCATION > 0
       )
+    end
+
+    # Contains server information, such as name and description.
+    # @see Core#handle_server_identification
+    # @param packet [String] The raw payload.
+    # @return [ServerIdentificationStruct] The processed payload.
+    def parse_server_identification(packet)
+      if packet.size < 16 + 4 + 2 + 4
+        @core.log("Received corrupt server identification packet from #{format_name()}")
+        return
+      end
+      hash, ip, port = packet.unpack('a16L<S<')
+      tags = read_tags(packet[22..-1])
+      if !tags
+        @core.log("Failed to parse tags in server identification packet from #{format_name()}")
+        name, description = nil, nil
+      else
+        name, description = tags[ST_SERVERNAME], tags[ST_DESCRIPTION]
+      end
+      ServerIdentificationStruct.new(hash, ip, port, name, description)
     end
 
     # Send login request to the server. We communicate basic information about ourselves, as well as client capabilities
