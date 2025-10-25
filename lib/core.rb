@@ -128,7 +128,8 @@ module ED2K
     # received right after logging in.
     # @see Server#parse_server_status
     # @yield Server status packet content
-    # @yieldparam payload [ServerStatusStruct] Contains the server's user and file count.
+    # @yieldparam server [Server] The server that sent this packet.
+    # @yieldparam payload [Server::ServerStatusStruct] Contains the server's user and file count.
     # @return [Proc] The resulting handler
     def handle_server_status(&handler)
       @handlers[OP_EDONKEYPROT][OP_SERVERSTATUS] = handler
@@ -145,7 +146,8 @@ module ED2K
     #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
     # @see Server#parse_server_message
     # @yield Server message packet content
-    # @yieldparam payload [ServerMessageStruct] Contains the list of messages.
+    # @yieldparam server [Server] The server that sent this packet.
+    # @yieldparam payload [Server::ServerMessageStruct] Contains the list of messages.
     # @return [Proc] The resulting handler
     def handle_server_messages(&handler)
       @handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
@@ -157,7 +159,8 @@ module ED2K
     # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
     # @see Server#parse_id_change
     # @yield ID change packet content
-    # @yieldparam payload [IdChangeStruct] Contains our new ID, server flags, etc.
+    # @yieldparam server [Server] The server that sent this packet.
+    # @yieldparam payload [Server::IdChangeStruct] Contains our new ID, server flags, etc.
     # @return [Proc] The resulting handler
     def handle_id_change(&handler)
       @handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
@@ -514,7 +517,7 @@ module ED2K
       end
 
       # Run the custom handler
-      @core.handlers&.[](protocol)&.[](opcode)&.call(data)
+      @core.handlers&.[](protocol)&.[](opcode)&.call(self, data)
       true
     end
 
