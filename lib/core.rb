@@ -124,6 +124,18 @@ module ED2K
       true
     end
 
+    # Add a handler for the server list packet. It contains a server's list of other known servers as (IP, Port) pairs.
+    # This packet is only sent on command and is requested with {Server#send_server_list_request}.
+    # @see Server#parse_server_list
+    # @see Server#send_server_list_request
+    # @yield Server list packet content
+    # @yieldparam server [Server] The server that sent this packet.
+    # @yieldparam payload [Server::ServerListStruct] Contains the list of servers' IP and port pairs.
+    # @return [Proc] The resulting handler
+    def handle_server_list(&handler)
+      @handlers[OP_EDONKEYPROT][OP_SERVERLIST] = handler
+    end
+
     # Add a handler for the server status packet. It contains the server's current user and file count, and is usually
     # received right after logging in.
     # @see Server#parse_server_status
@@ -187,7 +199,7 @@ module ED2K
     def log(msg)
       @log << msg
       @log.shift if @log.length > LOG_SIZE
-      puts "[%s %s]" % [Time.now.strftime('%H:%M:%S'), msg]
+      puts "[%s %s]" % [Time.now.strftime('%F %T'), msg]
     end
 
     private
@@ -517,7 +529,7 @@ module ED2K
       end
 
       # Run the custom handler
-      @core.handlers&.[](protocol)&.[](opcode)&.call(self, data)
+      @core.handlers&.[](protocol)&.[](opcode)&.call(self, data) if data
       true
     end
 

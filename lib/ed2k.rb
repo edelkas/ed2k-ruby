@@ -86,6 +86,7 @@ module ED2K
   # Original operations of the eDonkey protocol, sent by the server with OP_EDONKEYPROT via TCP.
 
 
+  OP_SERVERLIST    = 0x32 # List of known servers
   OP_SERVERSTATUS  = 0x34 # Current user and file count
   OP_SERVERMESSAGE = 0x38 # Notices sent by the server.
   OP_IDCHANGE      = 0x40 # The ID we've been assigned in this session
@@ -178,6 +179,13 @@ module ED2K
   SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type
   SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (>4GB)
   SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP
+
+  # Format an IPv4 into human-readable form.
+  # @param ip [Integer] The IP as received from the network
+  # @return [String] The formatted IP
+  def format_ip(ip)
+    [ip].pack('L>').unpack('C4').join('.')
+  end
 end
 
 require 'ipaddr'

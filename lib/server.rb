@@ -41,6 +41,9 @@ module ED2K
   class Server
     include Connection
 
+    # The processed payload of a SERVERLIST packet (see {#parse_server_list})
+    ServerListStruct = Struct.new(:servers)
+
     # The processed payload of a SERVERSTATUS packet (see {#parse_server_status}).
     ServerStatusStruct = Struct.new(:users, :files)
 
@@ -91,6 +94,8 @@ module ED2K
     # @return Packet-specific processed payload.
     def parse_edonkey_packet(opcode, packet)
       case opcode
+      when OP_SERVERLIST
+        parse_server_list(packet)
       when OP_SERVERSTATUS
         parse_server_status(packet)
       when OP_SERVERMESSAGE
@@ -99,7 +104,24 @@ module ED2K
         parse_id_change(packet)
       else
         @core.log("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
+        nil
       end
+    end
+
+    # Contains the server's list of other known servers. Received after being requested by the client via {#send_server_list_request}.
+    # @see Core#handle_server_list
+    # @param packet [String] The raw payload.
+    # @return [ServerListStruct] The processed payload.
+    def parse_server_list(packet)
+      count = packet.unpack1('C')
+      if packet.size < 1 + 6 * count
+        @core.log("Received corrupt server list packet from #{format_name()}")
+        return
+      end
+      servers = packet.unpack('L<S<' * count).each_slice(2).to_a
+      @core.log("Received #{count} servers from #{format_name()}")
+      servers.each{ |srv| @core.log("%15s:%d" % srv) }
+      ServerListStruct.new(servers)
     end
 
     # Contains the server's current user and file count. Received after logging in, typically.
@@ -132,7 +154,7 @@ module ED2K
       id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
       flags ||= 0
       @core.log("Received new ID from #{format_name()}: #{id}")
-      @core.log("Our IP is #{[ip].pack('L>').unpack('C4').join('.')}") if ip
+      @core.log("Our IP is #{format_ip(ip)}") if ip
       IdChangeStruct.new(
         self, id, ip, port, obfuscated_port,
         flags & SRV_TCPFLG_COMPRESSION    > 0,
