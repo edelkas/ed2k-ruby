@@ -483,7 +483,7 @@ module ED2K
     # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
     # @param control [Boolean] Whether the packet is a control packet or a data (standard) packet.
     # @return [Boolean] Whether the packet was successfully queued in the corresponding packet queue or not.
-    def queue_packet(protocol, opcode, payload, control = true)
+    def queue_packet(protocol, opcode, payload = '', control = true)
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size, opcode].pack('CL<C')))

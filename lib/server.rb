@@ -170,7 +170,7 @@ module ED2K
     # @param version_minor [Integer] Minor eMule version (7 bits, 0-99). Default: `50` (see {VERSION_MIN}).
     # @param version_update [Integer] Version update (3 bits, 0-5). Default: `1` (see {VERSION_UPDATE}).
     # @param version_edonkey [Integer] Underlying eDonkey2000 client version. Default: `60` (see {EDONKEYVERSION}).
-    def login(
+    def send_login(
       hash, name, port, id: 0,
       support_compression: false, support_newtags: true, support_largefiles: true, support_unicode: true,
       support_obfuscation: false, request_obfuscation: false, require_obfuscation: false,
@@ -205,6 +205,12 @@ module ED2K
 
       queue_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
       @core.log("Sent login request to #{format_name()}")
+    end
+
+    # Request the list of known servers to this server.
+    def send_server_list_request
+      queue_packet(OP_EDONKEYPROT, OP_GETSERVERLIST)
+      @core.log("Sent server list request to #{format_name()}")
     end
 
   end # Server

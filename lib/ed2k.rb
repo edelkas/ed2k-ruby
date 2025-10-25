@@ -79,7 +79,8 @@ module ED2K
   # Original operations of the eDonkey protocol, sent by the client with OP_EDONKEYPROT via TCP.
 
 
-  OP_LOGINREQUEST = 0x01 # Login to the server (see {Server#login}).
+  OP_LOGINREQUEST  = 0x01 # Login to the server (see {Server#send_login}).
+  OP_GETSERVERLIST = 0x14 # Request server list (see {Server#send_server_list_request}).
 
   # ------------ SERVER -> CLIENT TCP OPCODES
   # Original operations of the eDonkey protocol, sent by the server with OP_EDONKEYPROT via TCP.
