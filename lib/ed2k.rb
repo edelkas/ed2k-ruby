@@ -85,6 +85,7 @@ module ED2K
   # Original operations of the eDonkey protocol, sent by the server with OP_EDONKEYPROT via TCP.
 
 
+  OP_SERVERSTATUS  = 0x34 # Current user and file count
   OP_SERVERMESSAGE = 0x38 # Notices sent by the server.
   OP_IDCHANGE      = 0x40 # The ID we've been assigned in this session
 

@@ -124,6 +124,16 @@ module ED2K
       true
     end
 
+    # Add a handler for the server status packet. It contains the server's current user and file count, and is usually
+    # received right after logging in.
+    # @see Server#parse_server_status
+    # @yield Server status packet content
+    # @yieldparam payload [ServerStatusStruct] Contains the server's user and file count.
+    # @return [Proc] The resulting handler
+    def handle_server_status(&handler)
+      @handlers[OP_EDONKEYPROT][OP_SERVERSTATUS] = handler
+    end
+
     # Add a handler for the server message packet.
     # These are informative notices sent by the server, each packet can contain multiple ones.
     # Some standard ones have special meanings:
@@ -135,7 +145,7 @@ module ED2K
     #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
     # @see Server#parse_server_message
     # @yield Server message packet content
-    # @yieldparam messages [Array<String>] The list of messages contained in the packet.
+    # @yieldparam payload [ServerMessageStruct] Contains the list of messages.
     # @return [Proc] The resulting handler
     def handle_server_messages(&handler)
       @handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
@@ -146,8 +156,8 @@ module ED2K
     # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
     # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
     # @see Server#parse_id_change
-    # @yield Server message packet content
-    # @yieldparam messages [Array<String>] The list of messages contained in the packet.
+    # @yield ID change packet content
+    # @yieldparam payload [IdChangeStruct] Contains our new ID, server flags, etc.
     # @return [Proc] The resulting handler
     def handle_id_change(&handler)
       @handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler

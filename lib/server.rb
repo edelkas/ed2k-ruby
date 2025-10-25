@@ -41,6 +41,12 @@ module ED2K
   class Server
     include Connection
 
+    # The processed payload of a SERVERSTATUS packet (see {#parse_server_status}).
+    ServerStatusStruct = Struct.new(:users, :files)
+
+    # The processed payload of a SERVERMESSAGE packet (see {#parse_server_message})
+    ServerMessageStruct = Struct.new(:messages)
+
     # The processed payload of an IDCHANGE packet (see {#parse_id_change}). Note that the IP and ports are optional
     # and might be `nil`. The capability flags (`support_...`) should always be there for "modern" (16.44+) servers.
     IdChangeStruct = Struct.new(:server, :id, :ip, :port, :obfuscated_port, :support_compression, :support_newtags,
@@ -85,6 +91,8 @@ module ED2K
     # @return Packet-specific processed payload.
     def parse_edonkey_packet(opcode, packet)
       case opcode
+      when OP_SERVERSTATUS
+        parse_server_status(packet)
       when OP_SERVERMESSAGE
         parse_server_message(packet)
       when OP_IDCHANGE
@@ -94,13 +102,24 @@ module ED2K
       end
     end
 
+    # Contains the server's current user and file count. Received after logging in, typically.
+    # @see Core#handle_server_status
+    # @param packet [String] The raw payload.
+    # @return [ServerStatusStruct] The processed payload.
+    def parse_server_status(packet)
+      users, files = packet.unpack('L<2')
+      @core.log("Received server status from #{format_name()}: #{users} users, #{files} files")
+      ServerStatusStruct.new(users, files)
+    end
+
     # Received when the server sends us messages. A packet can contain multiple messages separated by new lines.
     # @see Core#handle_server_messages
-    # @param packet [String] The raw packet payload.
-    # @return [Array<String>] The messages in this packet.
+    # @param packet [String] The raw payload.
+    # @return [ServerMessageStruct] The processed payload.
     def parse_server_message(packet)
       length, messages = packet.unpack('S<A*')
-      messages.split("\r\n").map(&:strip).each{ |msg|
+      struct = ServerMessageStruct.new(messages.split("\r\n").map(&:strip))
+      struct.messages.each{ |msg|
         @core.log("Received server message from #{format_name()}: #{msg}")
       }
     end
