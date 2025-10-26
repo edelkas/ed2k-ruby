@@ -98,6 +98,8 @@ module ED2K
     # @return Packet-specific processed payload.
     def parse_edonkey_packet(opcode, packet)
       case opcode
+      when OP_REJECT
+        parse_reject()
       when OP_SERVERLIST
         parse_server_list(packet)
       when OP_SERVERSTATUS
@@ -112,6 +114,13 @@ module ED2K
         @core.log("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
         nil
       end
+    end
+
+    # Received when our last command was rejected by the server. There's no payload.
+    # @see Core#handle_reject
+    def parse_reject()
+      @core.log("Last command was rejected by server #{format_name()}")
+      nil
     end
 
     # Contains the server's list of other known servers. Received after being requested by the client via {#send_server_list_request}.

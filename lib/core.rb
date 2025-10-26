@@ -124,6 +124,16 @@ module ED2K
       true
     end
 
+    # Add a handler for the server reject packet. It contains no payload and is sent when the server has rejected our
+    # last command, usually due to malformed parameters, incorrect protocol being used, or something similar.
+    # @see Server#parse_reject
+    # @yield Server reject packet content (empty)
+    # @yieldparam server [Server] The server that sent this packet.
+    # @return [Proc] The resulting handler
+    def handle_reject(&handler)
+      @handlers[OP_EDONKEYPROT][OP_REJECT] = handler
+    end
+
     # Add a handler for the server list packet. It contains a server's list of other known servers as (IP, Port) pairs.
     # This packet is only sent as a response to {Server#send_server_list_request}.
     # @see Server#parse_server_list

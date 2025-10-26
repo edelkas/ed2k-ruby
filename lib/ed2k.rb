@@ -86,6 +86,7 @@ module ED2K
   # Original operations of the eDonkey protocol, sent by the server with OP_EDONKEYPROT via TCP.
 
 
+  OP_REJECT        = 0x05 # Our last command was rejected. This can happen e.g. if we send a malformed command or incorrect protocol.
   OP_SERVERLIST    = 0x32 # List of known servers
   OP_SERVERSTATUS  = 0x34 # Current user and file count
   OP_SERVERMESSAGE = 0x38 # Notices sent by the server.
