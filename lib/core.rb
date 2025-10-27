@@ -32,19 +32,46 @@ module ED2K
       @log = []
       @servers = {}
       @clients = {}
-      reload_preferences()
-
-      # Init socket thread
-      init_connections()
-      @control_socket = TCPServer.new(@tcp_port)
-      start_socket_thread()
-
-      # Init packet thread
+      @control_socket = nil
       @handlers = {}
-      start_packet_thread()
-
+      reload_preferences()
+      init_connections()
       @init = true
       log("Initialized core")
+    end
+
+    # Initialize the sockets and start monitoring connections.
+    def start
+      @control_socket = TCPServer.new(@tcp_port)
+      start_socket_thread()
+      start_packet_thread()
+      log("Started core")
+    end
+
+    # Stop monitoring connections and close sockets.
+    # @return [Boolean] Whether the core was stopped succesfully.
+    # @todo Add an option to forcefully stop (kill) the core, or perhaps a different method
+    def stop
+      return false if stop_socket_thread()
+      @control_socket.close()
+      @control_socket = nil
+      @connections.each{ |fileno, conn| disconnect(conn) }
+      return false if stop_packet_thread()
+      log("Stopped core")
+    end
+
+    # Establish a connection with a given server or client.
+    # @param conn [Connection] The {Server} or {Client} instance.
+    def connect(conn)
+      conn.connect
+      add_connection(conn)
+    end
+
+    # Close a connection with a given server or client.
+    # @param conn [Connection] The {Server} or {Client} instance.
+    def disconnect(conn)
+      conn.disconnect
+      remove_connection(conn)
     end
 
     # Read user preferences from disk and fill the missing ones with the default values
@@ -205,7 +232,7 @@ module ED2K
     # @param ip [String] The IPv4 address of the client.
     # @return [Client,nil] The client object if known, `nil` otherwise.
     def get_client(address: nil, ip: nil)
-      @clients[IPAddr.new(ip || address.ip_address).to_i]
+      @clients[pack_ip(ip || address.ip_address)]
     end
 
     # Get a known server by address. Only one of the parameters needs to be specified.
@@ -213,7 +240,34 @@ module ED2K
     # @param ip [String] The IPv4 address of the server.
     # @return [Server,nil] The server object if known, `nil` otherwise.
     def get_server(address: nil, ip: nil)
-      @servers[IPAddr.new(ip || address.ip_address).to_i]
+      @servers[pack_ip(ip || address.ip_address)]
+    end
+
+    # Add a new client to the list of known ones. If we're already connected we can simply supply the socket, otherwise
+    # we need to provide both the address and port.
+    # @param ip [String] The IPv4 address of the client
+    # @param port [Integer] The port the client is listening to
+    # @param socket [Socket] The socket if the connection is already established (they connected to us)
+    # @return [Client] The newly created client instance.
+    # @todo Careful with the distinction between ID and IP.
+    def add_client(ip: nil, port: nil, socket: nil)
+      key = pack_ip(ip || socket.remote_address.ip_address)
+      return @clients[key] if @clients.key?(key)
+      client = Client.new(id: ip, port: port, socket: socket, core: self)
+      log("Added new known client #{client.format_name()}")
+      @clients[key] = client
+    end
+
+    # Add a new server to the list of known ones.
+    # @param ip [String] The IPv4 address of the server.
+    # @param port [Integer] The port to connect to.
+    # @return [Server] The newly created server instance.
+    def add_server(ip, port)
+      key = pack_ip(ip)
+      return @servers[key] if @servers.key?(key)
+      server = Server.new(ip, port, core: self)
+      log("Added new known server #{server.format_name()}")
+      @servers[key] = server
     end
 
     # Add a message to the log of this core.
@@ -221,7 +275,7 @@ module ED2K
     def log(msg)
       @log << msg
       @log.shift if @log.length > LOG_SIZE
-      puts "[%s %s]" % [Time.now.strftime('%F %T'), msg]
+      puts "[%s] %s" % [Time.now.strftime('%F %T'), msg]
     end
 
     private
@@ -238,7 +292,7 @@ module ED2K
         # Read from sockets
         readable.each do |socket|
           # New incoming connection, accept it
-          next add_connection(socket.accept) if socket == @control_socket
+          next new_connection(socket.accept) if socket == @control_socket
 
           # Server or client activity, read data
           connection = @connections[socket.fileno]
@@ -252,8 +306,8 @@ module ED2K
         end
 
         # Ditch dead sockets
-        @connections.each do |conn|
-          remove_connection(conn) if !conn.alive?
+        @connections.each do |fileno, conn|
+          disconnect(conn) if !conn.alive?
         end
 
         # Prepare next iteration
@@ -286,8 +340,13 @@ module ED2K
       @connections = {}
     end
 
-    # Create a new connection and add it for IO monitoring
-    def add_connection(socket)
+    # Add a connection for IO monitoring
+    def add_connection(conn)
+      @connections[conn.socket.fileno] = conn
+    end
+
+    # Parse a new incoming connection and retrieve it (if already known) or create it
+    def new_connection(socket)
       addr = socket.remote_address
       ip = "%s:%d" % [addr.ip_address, addr.ip_port]
       if host = get_server(address: addr)
@@ -295,16 +354,14 @@ module ED2K
       elsif host = get_client(address: addr)
         log("Received new incoming connection from known client #{ip}")
       else
-        log("Found new client #{ip}")
-        host = Client.new(socket: socket, core: self)
+        host = add_client(socket: socket)
       end
       host.setup
-      @connections[socket.fileno] = host
+      add_connection(host)
     end
 
     # Stop monitoring a connection and remove the reference to it
     def remove_connection(conn)
-      conn.disconnect
       @connections.delete(conn.socket.fileno)
     end
 
