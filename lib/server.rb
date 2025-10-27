@@ -144,6 +144,10 @@ module ED2K
     # @param packet [String] The raw payload.
     # @return [ServerStatusStruct] The processed payload.
     def parse_server_status(packet)
+      if packet.size < 8
+        @core.log("Received corrupt server status from #{format_name()}")
+        return
+      end
       users, files = packet.unpack('L<2')
       @core.log("Received server status from #{format_name()}: #{users} users, #{files} files")
       ServerStatusStruct.new(users, files)
@@ -154,6 +158,10 @@ module ED2K
     # @param packet [String] The raw payload.
     # @return [ServerMessageStruct] The processed payload.
     def parse_server_message(packet)
+      if packet.size < 2
+        @core.log("Received corrupt server message from #{format_name()}")
+        return
+      end
       length, messages = packet.unpack('S<A*')
       struct = ServerMessageStruct.new(messages.split("\r\n").map(&:strip))
       struct.messages.each{ |msg|
@@ -166,10 +174,14 @@ module ED2K
     # @param packet [String] The raw payload.
     # @return [IdChangeStruct] The processed payload.
     def parse_id_change(packet)
+      if packet.size < 4
+        @core.log("Received corrupt ID change packet from #{format_name()}")
+        return
+      end
       id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
       flags ||= 0
       @core.log("Received new ID from #{format_name()}: #{id}")
-      @core.log("Our IP is #{format_ip(ip)}") if ip
+      @core.log("Our IP is #{unpack_ip(ip)}") if ip
       IdChangeStruct.new(
         self, id, ip, port, obfuscated_port,
         flags & SRV_TCPFLG_COMPRESSION    > 0,

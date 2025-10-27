@@ -208,11 +208,18 @@ module ED2K
   ST_TCPPORTOBFUSCATION = 0x97 # [uint16] TCP port for obfuscated connections
   ST_UDPPORTOBFUSCATION = 0x98 # [uint16] UDP port for obfuscated connections
 
-  # Format an IPv4 into human-readable form.
+  # Convert an IPv4 address string into an integer.
+  # @param ip [String] The IP address in its usual representation.
+  # @return [Integer] The packed IP
+  def pack_ip(ip)
+    ip.split('.').map(&:to_i).pack('C4').unpack1('L>')
+  end
+
+  # Format an IPv4 address into human-readable form.
   # @param ip [Integer] The IP as received from the network
   # @return [String] The formatted IP
-  def format_ip(ip)
-    [ip].pack('L>').unpack('C4').join('.')
+  def unpack_ip(ip)
+    [ip].pack('L>').unpack('C4').map(&:to_s).join('.')
   end
 end
 
