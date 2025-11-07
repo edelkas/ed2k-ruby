@@ -88,7 +88,7 @@ module ED2K
     # @return [String] Nick (IP:Port)
     def format_name
       ip = "%s:%d" % [@address.ip_address, @address.ip_port]
-      @name ? "#{@name} (#{ip})" : ip
+      !@name.empty? ? "#{@name} (#{ip})" : ip
     end
 
     # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
@@ -118,6 +118,7 @@ module ED2K
 
     # Received when our last command was rejected by the server. There's no payload.
     # @see Core#handle_reject
+    # @todo Returning nil is problematic because then the handler won't be run
     def parse_reject()
       @core.log("Last command was rejected by server #{format_name()}")
       nil
@@ -181,7 +182,7 @@ module ED2K
       id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
       flags ||= 0
       @core.log("Received new ID from #{format_name()}: #{id}")
-      @core.log("Our IP is #{unpack_ip(ip)}") if ip
+      @core.log("Our IP is #{ED2K::unpack_ip(ip)}") if ip
       IdChangeStruct.new(
         self, id, ip, port, obfuscated_port,
         flags & SRV_TCPFLG_COMPRESSION    > 0,

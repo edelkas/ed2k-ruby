@@ -153,6 +153,16 @@ module ED2K
   TAGTYPE_BSOB      = 0x0A # [Unused]
   TAGTYPE_UINT64    = 0x0B #   8 bytes
 
+  # ------------ CONNECTION TAGS
+  # These are sent when connecting to a server (login) or another client (hello) to exchange information about our client
+
+
+  CT_NAME          = 0x01 # Nickname
+  CT_PORT          = 0x0f # TCP port we're listening to
+  CT_VERSION       = 0x11 # eDonkey version (always EDONKEYVERSION = 0x3C)
+  CT_SERVER_FLAGS  = 0x20 # Bitfield for some capabilities we support
+  CT_EMULE_VERSION = 0xfb # eMule version (major, minor and update packed)
+
   # ------------ SERVER CAPABILITIES
   # Flags sent to the server during login (via CT_SERVER_FLAGS) to communicate the subset of functionalities we support
   # Protocol obfuscation (a.k.a. crypt layer) was added in eMule v0.47b. It "encrypts" packet data to appear random as
@@ -211,14 +221,14 @@ module ED2K
   # Convert an IPv4 address string into an integer.
   # @param ip [String] The IP address in its usual representation.
   # @return [Integer] The packed IP
-  def pack_ip(ip)
+  def self.pack_ip(ip)
     ip.split('.').map(&:to_i).pack('C4').unpack1('L>')
   end
 
   # Format an IPv4 address into human-readable form.
   # @param ip [Integer] The IP as received from the network
   # @return [String] The formatted IP
-  def unpack_ip(ip)
+  def self.unpack_ip(ip)
     [ip].pack('L>').unpack('C4').map(&:to_s).join('.')
   end
 end

@@ -21,11 +21,16 @@ module ED2K
   # This separation ensures that operations handling packets or data do not block socket activity.
   class Core
 
-    LOG_SIZE                 = 1000      # Number of messages to save in the log
-    SOCKET_READ_SIZE         = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
-    SOCKET_WRITE_SIZE        = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
-    DEFAULT_THREAD_FREQUENCY = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
-    DEFAULT_THREAD_TIMEOUT   = 1         # Maximum time in seconds to wait for a loop iteration to finish when stopping a thread
+    # Store session statistics, mostly about traffic.
+    attr_accessor :stats
+
+    LOG_SIZE          = 1000      # Number of messages to save in the log
+    SOCKET_READ_SIZE  = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
+    SOCKET_WRITE_SIZE = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
+    THREAD_FREQUENCY  = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
+    THREAD_TIMEOUT    = 2         # Maximum time in seconds to wait for a loop iteration to finish when stopping a thread
+    TIMEOUT_WAIT      = 0.5       # Maximum time in seconds to wait for sockets to be readable/writable before selecting again
+    TIMEOUT_CONNECT   = 5         # Maximum time in seconds to wait for connections to establish
 
     def initialize
       @init = false
@@ -35,6 +40,7 @@ module ED2K
       @control_socket = nil
       @handlers = {}
       reload_preferences()
+      init_stats()
       init_connections()
       @init = true
       log("Initialized core")
@@ -62,16 +68,25 @@ module ED2K
 
     # Establish a connection with a given server or client.
     # @param conn [Connection] The {Server} or {Client} instance.
+    # @return [Boolean] Whether the connection could be established.
     def connect(conn)
-      conn.connect
+      wait = TIMEOUT_CONNECT
+      freq = 0.25
+      while (status = conn.connect).nil? && wait > 0
+        sleep(freq)
+        wait -= freq
+      end
+      log("Connection to #{conn.format_name()} timed out") if status.nil?
+      return false if !status
       add_connection(conn)
+      true
     end
 
     # Close a connection with a given server or client.
     # @param conn [Connection] The {Server} or {Client} instance.
     def disconnect(conn)
-      conn.disconnect
       remove_connection(conn)
+      conn.disconnect
     end
 
     # Read user preferences from disk and fill the missing ones with the default values
@@ -87,7 +102,7 @@ module ED2K
     def start_socket_thread
       @thSockRun = true
       return @thSock if @thSock&.alive?
-      @thSockFreq = DEFAULT_THREAD_FREQUENCY
+      @thSockFreq = THREAD_FREQUENCY
       @thSockTick = Time.now
       @thSock = Thread.new{ run_socket_thread() }
       log("Started socket thread")
@@ -99,7 +114,7 @@ module ED2K
     def start_packet_thread
       @thPackRun = true
       return @thPack if @thPack&.alive?
-      @thPackFreq = DEFAULT_THREAD_FREQUENCY
+      @thPackFreq = THREAD_FREQUENCY
       @thPackTick = Time.now
       @thPack = Thread.new{ run_packet_thread() }
       log("Started packet thread")
@@ -113,7 +128,7 @@ module ED2K
     def stop_socket_thread
       return false if !@thSock&.alive?
       @thSockRun = false
-      return false if !@thSock.join(DEFAULT_THREAD_TIMEOUT)
+      return false if !@thSock.join(THREAD_TIMEOUT)
       @thSock.kill
       true
     end
@@ -126,7 +141,7 @@ module ED2K
     def stop_packet_thread
       return false if !@thPack&.alive?
       @thPackRun = false
-      return false if !@thPack.join(DEFAULT_THREAD_TIMEOUT)
+      return false if !@thPack.join(THREAD_TIMEOUT)
       @thPack.kill
       true
     end
@@ -232,7 +247,7 @@ module ED2K
     # @param ip [String] The IPv4 address of the client.
     # @return [Client,nil] The client object if known, `nil` otherwise.
     def get_client(address: nil, ip: nil)
-      @clients[pack_ip(ip || address.ip_address)]
+      @clients[ED2K::pack_ip(ip || address.ip_address)]
     end
 
     # Get a known server by address. Only one of the parameters needs to be specified.
@@ -240,7 +255,7 @@ module ED2K
     # @param ip [String] The IPv4 address of the server.
     # @return [Server,nil] The server object if known, `nil` otherwise.
     def get_server(address: nil, ip: nil)
-      @servers[pack_ip(ip || address.ip_address)]
+      @servers[ED2K::pack_ip(ip || address.ip_address)]
     end
 
     # Add a new client to the list of known ones. If we're already connected we can simply supply the socket, otherwise
@@ -251,7 +266,7 @@ module ED2K
     # @return [Client] The newly created client instance.
     # @todo Careful with the distinction between ID and IP.
     def add_client(ip: nil, port: nil, socket: nil)
-      key = pack_ip(ip || socket.remote_address.ip_address)
+      key = ED2K::pack_ip(ip || socket.remote_address.ip_address)
       return @clients[key] if @clients.key?(key)
       client = Client.new(id: ip, port: port, socket: socket, core: self)
       log("Added new known client #{client.format_name()}")
@@ -263,7 +278,7 @@ module ED2K
     # @param port [Integer] The port to connect to.
     # @return [Server] The newly created server instance.
     def add_server(ip, port)
-      key = pack_ip(ip)
+      key = ED2K::pack_ip(ip)
       return @servers[key] if @servers.key?(key)
       server = Server.new(ip, port, core: self)
       log("Added new known server #{server.format_name()}")
@@ -275,7 +290,7 @@ module ED2K
     def log(msg)
       @log << msg
       @log.shift if @log.length > LOG_SIZE
-      puts "[%s] %s" % [Time.now.strftime('%F %T'), msg]
+      puts "[%s] %s" % [Time.now.strftime('%F %T.%L'), msg]
     end
 
     private
@@ -287,22 +302,24 @@ module ED2K
         to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
         to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
         to_read.push(@control_socket)
-        readable, writable = IO.select(to_read, to_write)
+        readable, writable = IO.select(to_read, to_write, [], TIMEOUT_WAIT)
 
-        # Read from sockets
-        readable.each do |socket|
-          # New incoming connection, accept it
-          next new_connection(socket.accept) if socket == @control_socket
+        if readable && (!readable.empty? || !writable.empty?)
+          # Read from sockets
+          readable.each do |socket|
+            # New incoming connection, accept it
+            next new_connection(socket.accept) if socket == @control_socket
 
-          # Server or client activity, read data
-          connection = @connections[socket.fileno]
-          read = connection.read(SOCKET_READ_SIZE)
-        end
+            # Server or client activity, read data
+            connection = @connections[socket.fileno]
+            read = connection.read(SOCKET_READ_SIZE)
+          end
 
-        # Write to sockets
-        writable.each do |socket|
-          connection = @connections[socket.fileno]
-          written = connection.write(SOCKET_WRITE_SIZE)
+          # Write to sockets
+          writable.each do |socket|
+            connection = @connections[socket.fileno]
+            written = connection.write(SOCKET_WRITE_SIZE)
+          end
         end
 
         # Ditch dead sockets
@@ -322,7 +339,7 @@ module ED2K
     def run_packet_thread
       while @thPackRun
         # Consume all new packets
-        @connections.each do |conn|
+        @connections.each do |fileno, conn|
           conn.process_packets
         end
 
@@ -363,6 +380,18 @@ module ED2K
     # Stop monitoring a connection and remove the reference to it
     def remove_connection(conn)
       @connections.delete(conn.socket.fileno)
+    end
+
+    # Initialize stats for this session
+    def init_stats
+      @stats = {
+        in_data:         0,
+        out_data:        0,
+        in_packets:      0,
+        out_packets:     0,
+        in_packets_bad:  0,
+        out_packets_bad: 0
+      }
     end
 
   end # Core
@@ -418,9 +447,11 @@ module ED2K
     # get a connection. Should only be called when we're the ones initiating the connection.
     # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
     def connect
-      setup() if !@ready
-      @socket = Socket.new(:INET, :STREAM) if !@socket || @socket.closed?
-      @core.log("Connecting to #{format_name()}...")
+      setup()
+      if !@socket || @socket.closed?
+        @core.log("Connecting to #{format_name()}...")
+        @socket = Socket.new(:INET, :STREAM)
+      end
       @socket.connect_nonblock(@address) == 0
     rescue Errno::EISCONN
       @core.log("Connected to #{format_name()}")
@@ -530,10 +561,13 @@ module ED2K
     rescue IO::WaitWritable                # Cannot write any more
       sent
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
+      @core.log("Connection was lost while writing to #{format_name()}")
       close_for_writing()
       sent == 0 ? -1 : sent
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
       sent == 0 ? -1 : sent
+    ensure
+      @core.stats[:out_data] += sent
     end
 
     # Read a certain amount of data from the socket into the read buffer. Any complete packet will be pushed into the
@@ -555,13 +589,16 @@ module ED2K
         @incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
       end
 
+      @core.stats[:in_data] += received
       received
     rescue IO::WaitReadable                # Nothing to read
       0
     rescue EOFError                        # Peer stopped writing
+      @core.log("EOF received from #{format_name()}")
       close_for_reading()
       -1
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
+      @core.log("Connection was lost while reading from #{format_name()}")
       close_for_reading()
       -1
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
@@ -578,6 +615,7 @@ module ED2K
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size, opcode].pack('CL<C')))
+      @core.stats[:out_packets] += 1
       @core.log("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
       true
     end
@@ -587,11 +625,13 @@ module ED2K
     # @return [Boolean] Whether the packet was parsed and processed successfully or not
     def process_packet(packet)
       # Sanity checks
+      @core.stats[:in_packets] += 1
+      head = PACKET_HEADER_SIZE
       length = packet.length
-      return false if length < PACKET_HEADER_SIZE
+      raise "Incorrect packet length (#{length} < #{head})" if length < head
       protocol, size, opcode = packet.unpack('CL<C')
-      return false if length != PACKET_HEADER_SIZE + size
-      packet.slice!(0, PACKET_HEADER_SIZE)
+      raise "Incorrect packet length (#{length} vs #{head + size})" if length != head + size
+      packet.slice!(0, head)
 
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
       case protocol
@@ -603,13 +643,17 @@ module ED2K
         @core.log("Received unsupported ed2k protocol #{protocol}")
         return true
       else
-        @core.log("Received unknown ed2k protocol #{protocol}")
-        return false
+        raise "Received unknown ed2k protocol #{protocol}"
       end
 
       # Run the custom handler
       @core.handlers&.[](protocol)&.[](opcode)&.call(self, data) if data
+      @core.stats[:in_packets] += 1
       true
+    rescue => e
+      @core.log(e.message)
+      @core.stats[:in_packets_bad] += 1
+      false
     end
 
     # Consumes and processes all the currently pending packets from the incoming queue
@@ -656,11 +700,11 @@ module ED2K
       # Dump tag triplet (type, key, value)
       case value
       when Integer
-        if size <= 0xFF && new
+        if value <= 0xFF && new
           [TAGTYPE_UINT8 | switch, key, value].pack('Ca*C')
-        elsif size <= 0xFFFF && new
+        elsif value <= 0xFFFF && new
           [TAGTYPE_UINT16 | switch, key, value].pack('Ca*S<')
-        elsif size <= 0xFFFFFFFF
+        elsif value <= 0xFFFFFFFF
           [TAGTYPE_UINT32 | switch, key, value].pack('Ca*L<')
         else
           [TAGTYPE_UINT64 | switch, key, value].pack('Ca*Q<')
