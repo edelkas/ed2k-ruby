@@ -21,10 +21,17 @@ module ED2K
   # This separation ensures that operations handling packets or data do not block socket activity.
   class Core
 
+    # The TCP port our client will be listening to for incoming connections from both the servers and other clients.
+    # It must be reachable, a.k.a. "open", in the router.
+    # @return [Integer]
+    attr_reader :tcp_port
+
     # Store session statistics, mostly about traffic.
+    # @return [Hash]
     attr_accessor :stats
 
     LOG_SIZE          = 1000      # Number of messages to save in the log
+    MAX_SOCKET_QUEUE  = 128       # Max connections with unfinished handshakes (referred to as "half-open" in eMule)
     SOCKET_READ_SIZE  = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
     SOCKET_WRITE_SIZE = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
     THREAD_FREQUENCY  = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
@@ -47,22 +54,39 @@ module ED2K
     end
 
     # Initialize the sockets and start monitoring connections.
-    def start
-      @control_socket = TCPServer.new(@tcp_port)
+    # @param port [Integer] The TCP port to bind to and listen for incoming connections.
+    # @return [Boolean] Whether the core was started successfully or not.
+    def start(port = DEFAULT_TCP_PORT)
+      config(tcp_port: port)
+      @control_socket = Socket.new(:INET, :STREAM)
+      @control_socket.bind(Socket.pack_sockaddr_in(@tcp_port, '0.0.0.0'))
+      @control_socket.listen(MAX_SOCKET_QUEUE)
       start_socket_thread()
       start_packet_thread()
       log("Started core")
+      true
+    rescue Errno::EADDRINUSE
+      log("Failed to start core: The TCP port #{@tcp_port} is already in use")
+      @control_socket = nil
+      false
+    rescue => e
+      log("Unknown error starting core: #{e}")
+      @control_socket = nil
+      false
     end
 
     # Stop monitoring connections and close sockets.
     # @return [Boolean] Whether the core was stopped succesfully.
     # @todo Add an option to forcefully stop (kill) the core, or perhaps a different method
     def stop
-      return false if stop_socket_thread()
-      @control_socket.close()
-      @control_socket = nil
+      return false if !stop_socket_thread()
+      if @control_socket
+        log("Stopped TCP server on port #{@control_socket.local_address.ip_port}")
+        @control_socket.close()
+        @control_socket = nil
+      end
       @connections.each{ |fileno, conn| disconnect(conn) }
-      return false if stop_packet_thread()
+      return false if !stop_packet_thread()
       log("Stopped core")
     end
 
@@ -96,6 +120,21 @@ module ED2K
       log("Loaded preferences")
     end
 
+    # Change some individual configurations. Only non-null parameters will actually be changed.
+    # @param tcp_port [Integer] Port our client will be listening to for incoming TCP connections, should be reachable ("open").
+    # @param udp_port [Integer] Ditto for new incoming UDP packets.
+    def config(tcp_port: nil, udp_port: nil)
+      if tcp_port
+        @tcp_port = tcp_port
+        log("TCP port was changed to #{@tcp_port}")
+      end
+
+      if udp_port
+        @udp_port = udp_port
+        log("UDP port was changed to #{@udp_port}")
+      end
+    end
+
     # Starts the socket thread and begins monitoring network IO.
     # @note This is done automatically by {#initialize}, only do manually if stopped manually or if it crashed.
     # @return [Thread] The socket thread object
@@ -105,7 +144,7 @@ module ED2K
       @thSockFreq = THREAD_FREQUENCY
       @thSockTick = Time.now
       @thSock = Thread.new{ run_socket_thread() }
-      log("Started socket thread")
+      log("Started socket thread: Data transfer enabled. Listening on TCP port #{@tcp_port}.")
     end
 
     # Starts the packet thread and begins monitoring incoming packets to be parsed
@@ -117,19 +156,20 @@ module ED2K
       @thPackFreq = THREAD_FREQUENCY
       @thPackTick = Time.now
       @thPack = Thread.new{ run_packet_thread() }
-      log("Started packet thread")
+      log("Started packet thread: Monitoring incoming packets.")
     end
 
     # Attempts to stop the socket thread gracefully and end network monitoring. It will wait until the current loop is
     # finished, which is normally very quick. It does **not** close the sockets afterwards.
     # @note This is done automatically when disconnecting.
     # @see #kill_socket_thread
-    # @return [Boolean] `true` if the thread was stopped successfully, `false` if it wasn't running or failed to be stopped.
+    # @return [Boolean] `true` if the thread isn't running or was stopped successfully, `false` otherwise.
     def stop_socket_thread
-      return false if !@thSock&.alive?
+      return true if !@thSock&.alive?
       @thSockRun = false
       return false if !@thSock.join(THREAD_TIMEOUT)
       @thSock.kill
+      log("Killed socket thread: Stopped data transfer.")
       true
     end
 
@@ -137,12 +177,13 @@ module ED2K
     # finished, which is normally very quick.
     # @note This is done automatically when disconnecting.
     # @see #kill_packet_thread
-    # @return [Boolean] `true` if the thread was stopped successfully, `false` if it wasn't running or failed to be stopped.
+    # @return [Boolean] `true` if the thread isn't running or was stopped successfully, `false` otherwise.
     def stop_packet_thread
-      return false if !@thPack&.alive?
+      return true if !@thPack&.alive?
       @thPackRun = false
       return false if !@thPack.join(THREAD_TIMEOUT)
       @thPack.kill
+      log("Killed packet thread: Stopped monitoring incoming packets.")
       true
     end
 
@@ -153,6 +194,7 @@ module ED2K
       return false if !@thSock&.alive?
       @thSockRun = false
       @thSock.kill
+      log("Killed socket thread: Stopped data transfer.")
       true
     end
 
@@ -163,6 +205,7 @@ module ED2K
       return false if !@thPack&.alive?
       @thPackRun = false
       @thPack.kill
+      log("Killed packet thread: Stopped monitoring incoming packets.")
       true
     end
 
@@ -269,7 +312,7 @@ module ED2K
       key = ED2K::pack_ip(ip || socket.remote_address.ip_address)
       return @clients[key] if @clients.key?(key)
       client = Client.new(id: ip, port: port, socket: socket, core: self)
-      log("Added new known client #{client.format_name()}")
+      log("New known client: #{client.format_name()}")
       @clients[key] = client
     end
 
@@ -281,7 +324,7 @@ module ED2K
       key = ED2K::pack_ip(ip)
       return @servers[key] if @servers.key?(key)
       server = Server.new(ip, port, core: self)
-      log("Added new known server #{server.format_name()}")
+      log("New known server: #{server.format_name()}")
       @servers[key] = server
     end
 
@@ -365,11 +408,10 @@ module ED2K
     # Parse a new incoming connection and retrieve it (if already known) or create it
     def new_connection(socket)
       addr = socket.remote_address
-      ip = "%s:%d" % [addr.ip_address, addr.ip_port]
       if host = get_server(address: addr)
-        log("Received new incoming connection from known server #{ip}")
+        log("Received new incoming connection from known server #{host.format_name()}")
       elsif host = get_client(address: addr)
-        log("Received new incoming connection from known client #{ip}")
+        log("Received new incoming connection from known client #{host.format_name()}")
       else
         host = add_client(socket: socket)
       end

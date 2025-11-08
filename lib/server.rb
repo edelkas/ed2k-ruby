@@ -227,8 +227,8 @@ module ED2K
     # @note Some options, like compression or protocol obfuscation, can't be enabled for now because they aren't supported yet.
     # @param hash [String] Our 16-byte client hash that identifies us in the network
     # @param name [String] Our nickname as it shows to other clients
-    # @param port [Integer] The TCP port we are listening to for incoming connections from the server and other clients
     # @param id [Integer] Our client ID. This is assigned by the server itself, so its usually 0 the first time we connect.
+    # @param port [Integer] The TCP port we are listening to for incoming connections from the server and other clients.
     # @param support_compression [Boolean] If we support compressed packets via the packed protocol ({OP_PACKEDPROT}). **Currently not available**.
     # @param support_newtags [Boolean] If we support new-style Lugdunum tags (see {#write_tag}).
     # @param support_largefiles [Boolean] If we support 64 bit file sizes (i.e. >4GB).
@@ -241,7 +241,7 @@ module ED2K
     # @param version_update [Integer] Version update (3 bits, 0-5). Default: `1` (see {VERSION_UPDATE}).
     # @param version_edonkey [Integer] Underlying eDonkey2000 client version. Default: `60` (see {EDONKEYVERSION}).
     def send_login(
-      hash, name, port, id: 0,
+      hash, name, id: 0, port: @core.tcp_port,
       support_compression: false, support_newtags: true, support_largefiles: true, support_unicode: true,
       support_obfuscation: false, request_obfuscation: false, require_obfuscation: false,
       version_major: VERSION_MJR, version_minor: VERSION_MIN, version_update: VERSION_UPDATE, version_edonkey: EDONKEYVERSION
