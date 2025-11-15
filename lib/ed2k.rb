@@ -231,6 +231,15 @@ module ED2K
   def self.unpack_ip(ip)
     [ip].pack('L>').unpack('C4').map(&:to_s).join('.')
   end
+
+  # Helper to serialize raw binary data for logging purposes
+  # @param data [String] Raw data to serialize
+  # @return [String] Serialized data
+  def self.serialize(data, width = 16)
+    data.bytes.lazy.each_slice(width).map{ |bytes|
+      bytes.map{ |i| i.to_s(16).rjust(2, '0') }.join(' ')
+    }.force.join("\n")
+  end
 end
 
 require 'ipaddr'
@@ -243,4 +252,4 @@ require_relative 'server.rb'
 require_relative 'client.rb'
 require_relative 'hash.rb'
 
-require_relative 'ced2k'
+#require_relative 'ced2k'

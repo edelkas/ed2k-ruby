@@ -111,7 +111,7 @@ module ED2K
       when OP_SERVERIDENT
         parse_server_identification(packet)
       else
-        @core.log("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
+        @core.log_debug("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
         nil
       end
     end
@@ -120,7 +120,7 @@ module ED2K
     # @see Core#handle_reject
     # @todo Returning nil is problematic because then the handler won't be run
     def parse_reject()
-      @core.log("Last command was rejected by server #{format_name()}")
+      @core.log_debug("Last command was rejected by server #{format_name()}")
       nil
     end
 
@@ -131,12 +131,12 @@ module ED2K
     def parse_server_list(packet)
       count = packet.unpack1('C')
       if packet.size < 1 + 6 * count
-        @core.log("Received corrupt server list packet from #{format_name()}")
+        @core.log_debug("Received corrupt server list packet from #{format_name()}")
         return
       end
       servers = packet.unpack('L<S<' * count).each_slice(2).to_a
-      @core.log("Received #{count} servers from #{format_name()}")
-      servers.each{ |srv| @core.log("%15s:%d" % srv) }
+      @core.log_info("Received #{count} servers from #{format_name()}")
+      servers.each{ |srv| @core.log_debug("%15s:%d" % srv) }
       ServerListStruct.new(servers)
     end
 
@@ -146,11 +146,11 @@ module ED2K
     # @return [ServerStatusStruct] The processed payload.
     def parse_server_status(packet)
       if packet.size < 8
-        @core.log("Received corrupt server status from #{format_name()}")
+        @core.log_debug("Received corrupt server status from #{format_name()}")
         return
       end
       users, files = packet.unpack('L<2')
-      @core.log("Received server status from #{format_name()}: #{users} users, #{files} files")
+      @core.log_debug("Received server status from #{format_name()}: #{users} users, #{files} files")
       ServerStatusStruct.new(users, files)
     end
 
@@ -160,13 +160,13 @@ module ED2K
     # @return [ServerMessageStruct] The processed payload.
     def parse_server_message(packet)
       if packet.size < 2
-        @core.log("Received corrupt server message from #{format_name()}")
+        @core.log_debug("Received corrupt server message from #{format_name()}")
         return
       end
       length, messages = packet.unpack('S<A*')
       struct = ServerMessageStruct.new(messages.split("\r\n").map(&:strip))
       struct.messages.each{ |msg|
-        @core.log("Received server message from #{format_name()}: #{msg}")
+        @core.log_info("Received server message from #{format_name()}: #{msg}")
       }
     end
 
@@ -176,13 +176,13 @@ module ED2K
     # @return [IdChangeStruct] The processed payload.
     def parse_id_change(packet)
       if packet.size < 4
-        @core.log("Received corrupt ID change packet from #{format_name()}")
+        @core.log_debug("Received corrupt ID change packet from #{format_name()}")
         return
       end
       id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
       flags ||= 0
-      @core.log("Received new ID from #{format_name()}: #{id}")
-      @core.log("Our IP is #{ED2K::unpack_ip(ip)}") if ip
+      @core.log_info("Received new ID from #{format_name()}: #{id}")
+      @core.log_debug("Our IP is #{ED2K::unpack_ip(ip)}") if ip
       IdChangeStruct.new(
         self, id, ip, port, obfuscated_port,
         flags & SRV_TCPFLG_COMPRESSION    > 0,
@@ -201,13 +201,13 @@ module ED2K
     # @return [ServerIdentificationStruct] The processed payload.
     def parse_server_identification(packet)
       if packet.size < 16 + 4 + 2 + 4
-        @core.log("Received corrupt server identification packet from #{format_name()}")
+        @core.log_debug("Received corrupt server identification packet from #{format_name()}")
         return
       end
       hash, ip, port = packet.unpack('a16L<S<')
       tags = read_tags(packet[22..-1])
       if !tags
-        @core.log("Failed to parse tags in server identification packet from #{format_name()}")
+        @core.log_debug("Failed to parse tags in server identification packet from #{format_name()}")
         name, description = nil, nil
       else
         name, description = tags[ST_SERVERNAME], tags[ST_DESCRIPTION]
@@ -274,13 +274,13 @@ module ED2K
       data << write_tag(CT_EMULE_VERSION, version)
 
       queue_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
-      @core.log("Sent login request to #{format_name()}")
+      @core.log_info("Sent login request to #{format_name()}")
     end
 
     # Request the list of known servers to this server.
     def send_server_list_request
       queue_packet(OP_EDONKEYPROT, OP_GETSERVERLIST)
-      @core.log("Sent server list request to #{format_name()}")
+      @core.log_debug("Sent server list request to #{format_name()}")
     end
 
   end # Server

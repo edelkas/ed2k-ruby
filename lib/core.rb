@@ -30,7 +30,14 @@ module ED2K
     # @return [Hash]
     attr_accessor :stats
 
-    LOG_SIZE          = 1000      # Number of messages to save in the log
+    LOG_LEVEL_NONE    = 0         # Placeholder to disable logging altogether
+    LOG_LEVEL_FATAL   = 1         # Application-breaking errors
+    LOG_LEVEL_ERROR   = 2         # Unrecoverable issues, such as connection errors
+    LOG_LEVEL_WARNING = 3         # Recoverable issues, such as corrupt packets
+    LOG_LEVEL_NOTICE  = 4         # Relevant messages, usually positive
+    LOG_LEVEL_INFO    = 5         # Standard information messages
+    LOG_LEVEL_DEBUG   = 6         # Verbose information, such as control packets sent, protocol errors, etc
+    LOG_LEVEL_TRACE   = 7         # Extremely verbose information, such as data dumps
     MAX_SOCKET_QUEUE  = 128       # Max connections with unfinished handshakes (referred to as "half-open" in eMule)
     SOCKET_READ_SIZE  = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
     SOCKET_WRITE_SIZE = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
@@ -39,18 +46,24 @@ module ED2K
     TIMEOUT_WAIT      = 0.5       # Maximum time in seconds to wait for sockets to be readable/writable before selecting again
     TIMEOUT_CONNECT   = 5         # Maximum time in seconds to wait for connections to establish
 
-    def initialize
+    # @param log_level [Integer] The log level for the default logger, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_TRACE}. If you
+    #        have set a custom logger (see {#add_logger}) you may want to disable this by setting it to {LOG_LEVEL_NONE}.
+    # @param log_traces [Boolean] If set to `false`, traces (the most verbose logs) won't even be sent to the loggers.
+    #        This is done to save resources, since generating them could be quite heavy.
+    def initialize(log_level: LOG_LEVEL_DEBUG, log_traces: false)
       @init = false
-      @log = []
       @servers = {}
       @clients = {}
+      @loggers = []
+      @log_level = log_level
+      @log_traces = send_trace
       @control_socket = nil
       @handlers = {}
       reload_preferences()
       init_stats()
       init_connections()
       @init = true
-      log("Initialized core")
+      log_debug("Initialized core")
     end
 
     # Initialize the sockets and start monitoring connections.
@@ -63,14 +76,14 @@ module ED2K
       @control_socket.listen(MAX_SOCKET_QUEUE)
       start_socket_thread()
       start_packet_thread()
-      log("Started core")
+      log_info("Started core")
       true
     rescue Errno::EADDRINUSE
-      log("Failed to start core: The TCP port #{@tcp_port} is already in use")
+      log_error("Failed to start core: The TCP port #{@tcp_port} is already in use")
       @control_socket = nil
       false
     rescue => e
-      log("Unknown error starting core: #{e}")
+      log_error("Unknown error starting core: #{e}")
       @control_socket = nil
       false
     end
@@ -81,13 +94,14 @@ module ED2K
     def stop
       return false if !stop_socket_thread()
       if @control_socket
-        log("Stopped TCP server on port #{@control_socket.local_address.ip_port}")
+        log_info("Stopped TCP server on port #{@control_socket.local_address.ip_port}")
         @control_socket.close()
         @control_socket = nil
       end
       @connections.each{ |fileno, conn| disconnect(conn) }
       return false if !stop_packet_thread()
-      log("Stopped core")
+      log_info("Stopped core")
+      true
     end
 
     # Establish a connection with a given server or client.
@@ -100,7 +114,7 @@ module ED2K
         sleep(freq)
         wait -= freq
       end
-      log("Connection to #{conn.format_name()} timed out") if status.nil?
+      log_warning("Connection to #{conn.format_name()} timed out") if status.nil?
       return false if !status
       add_connection(conn)
       true
@@ -117,7 +131,7 @@ module ED2K
     def reload_preferences
       @tcp_port = DEFAULT_TCP_PORT
       @udp_port = DEFAULT_UDP_PORT
-      log("Loaded preferences")
+      log_info("Loaded preferences")
     end
 
     # Change some individual configurations. Only non-null parameters will actually be changed.
@@ -126,12 +140,12 @@ module ED2K
     def config(tcp_port: nil, udp_port: nil)
       if tcp_port
         @tcp_port = tcp_port
-        log("TCP port was changed to #{@tcp_port}")
+        log_debug("TCP port was changed to #{@tcp_port}")
       end
 
       if udp_port
         @udp_port = udp_port
-        log("UDP port was changed to #{@udp_port}")
+        log_debug("UDP port was changed to #{@udp_port}")
       end
     end
 
@@ -144,7 +158,7 @@ module ED2K
       @thSockFreq = THREAD_FREQUENCY
       @thSockTick = Time.now
       @thSock = Thread.new{ run_socket_thread() }
-      log("Started socket thread: Data transfer enabled. Listening on TCP port #{@tcp_port}.")
+      log_debug("Started socket thread: Data transfer enabled. Listening on TCP port #{@tcp_port}.")
     end
 
     # Starts the packet thread and begins monitoring incoming packets to be parsed
@@ -156,7 +170,7 @@ module ED2K
       @thPackFreq = THREAD_FREQUENCY
       @thPackTick = Time.now
       @thPack = Thread.new{ run_packet_thread() }
-      log("Started packet thread: Monitoring incoming packets.")
+      log_debug("Started packet thread: Monitoring incoming packets.")
     end
 
     # Attempts to stop the socket thread gracefully and end network monitoring. It will wait until the current loop is
@@ -169,7 +183,7 @@ module ED2K
       @thSockRun = false
       return false if !@thSock.join(THREAD_TIMEOUT)
       @thSock.kill
-      log("Killed socket thread: Stopped data transfer.")
+      log_debug("Killed socket thread: Stopped data transfer.")
       true
     end
 
@@ -183,7 +197,7 @@ module ED2K
       @thPackRun = false
       return false if !@thPack.join(THREAD_TIMEOUT)
       @thPack.kill
-      log("Killed packet thread: Stopped monitoring incoming packets.")
+      log_debug("Killed packet thread: Stopped monitoring incoming packets.")
       true
     end
 
@@ -194,7 +208,7 @@ module ED2K
       return false if !@thSock&.alive?
       @thSockRun = false
       @thSock.kill
-      log("Killed socket thread: Stopped data transfer.")
+      log_debug("Killed socket thread: Stopped data transfer.")
       true
     end
 
@@ -205,14 +219,22 @@ module ED2K
       return false if !@thPack&.alive?
       @thPackRun = false
       @thPack.kill
-      log("Killed packet thread: Stopped monitoring incoming packets.")
+      log_debug("Killed packet thread: Stopped monitoring incoming packets.")
       true
     end
+
+    # Add a handler for logging events triggered by the core. You can add multiple handlers.
+    # @yieldparam msg [String] The logged message, might contain multiple lines.
+    # @yieldparam level [Integer] The level / severity of the message, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_TRACE}.
+    # @return [Proc] The resulting handler
+    def add_logger(&logger)
+      @loggers << logger
+    end
+
 
     # Add a handler for the server reject packet. It contains no payload and is sent when the server has rejected our
     # last command, usually due to malformed parameters, incorrect protocol being used, or something similar.
     # @see Server#parse_reject
-    # @yield Server reject packet content (empty)
     # @yieldparam server [Server] The server that sent this packet.
     # @return [Proc] The resulting handler
     def handle_reject(&handler)
@@ -223,7 +245,6 @@ module ED2K
     # This packet is only sent as a response to {Server#send_server_list_request}.
     # @see Server#parse_server_list
     # @see Server#send_server_list_request
-    # @yield Server list packet content
     # @yieldparam server [Server] The server that sent this packet.
     # @yieldparam payload [Server::ServerListStruct] Contains the list of servers' IP and port pairs.
     # @return [Proc] The resulting handler
@@ -234,7 +255,6 @@ module ED2K
     # Add a handler for the server status packet. It contains the server's current user and file count, and is usually
     # received right after logging in.
     # @see Server#parse_server_status
-    # @yield Server status packet content
     # @yieldparam server [Server] The server that sent this packet.
     # @yieldparam payload [Server::ServerStatusStruct] Contains the server's user and file count.
     # @return [Proc] The resulting handler
@@ -252,7 +272,6 @@ module ED2K
     # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use DNS because their IP is dynamic and thus subject to change
     #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
     # @see Server#parse_server_message
-    # @yield Server message packet content
     # @yieldparam server [Server] The server that sent this packet.
     # @yieldparam payload [Server::ServerMessageStruct] Contains the list of messages.
     # @return [Proc] The resulting handler
@@ -265,7 +284,6 @@ module ED2K
     # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
     # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
     # @see Server#parse_id_change
-    # @yield ID change packet content
     # @yieldparam server [Server] The server that sent this packet.
     # @yieldparam payload [Server::IdChangeStruct] Contains our new ID, server flags, etc.
     # @return [Proc] The resulting handler
@@ -277,7 +295,6 @@ module ED2K
     # the IP address and port to connect to it, and its name and short description. This packet is sent as a response to
     # {Server#send_server_list_request}.
     # @see Server#parse_server_identification
-    # @yield Server identification packet content
     # @yieldparam server [Server] The server that sent this packet.
     # @yieldparam payload [Server::ServerIdentificationStruct] Contains the server's hash, IP, port, name and description.
     # @return [Proc] The resulting handler
@@ -312,7 +329,7 @@ module ED2K
       key = ED2K::pack_ip(ip || socket.remote_address.ip_address)
       return @clients[key] if @clients.key?(key)
       client = Client.new(id: ip, port: port, socket: socket, core: self)
-      log("New known client: #{client.format_name()}")
+      log_debug("New known client: #{client.format_name()}")
       @clients[key] = client
     end
 
@@ -324,19 +341,59 @@ module ED2K
       key = ED2K::pack_ip(ip)
       return @servers[key] if @servers.key?(key)
       server = Server.new(ip, port, core: self)
-      log("New known server: #{server.format_name()}")
+      log_debug("New known server: #{server.format_name()}")
       @servers[key] = server
     end
 
-    # Add a message to the log of this core.
-    # @param msg [String] Text to log.
-    def log(msg)
-      @log << msg
-      @log.shift if @log.length > LOG_SIZE
-      puts "[%s] %s" % [Time.now.strftime('%F %T.%L'), msg]
+    # The following logging helper methods shouldn't really be called by the user, but they can't be private either
+    # because other classes need to use them.
+    # @private
+    def log_fatal(msg)
+      log(msg, LOG_LEVEL_FATAL)
+    end
+
+    # @private
+    def log_error(msg)
+      log(msg, LOG_LEVEL_ERROR)
+    end
+
+    # @private
+    def log_warning(msg)
+      log(msg, LOG_LEVEL_WARNING)
+    end
+
+    # @private
+    def log_notice(msg)
+      log(msg, LOG_LEVEL_NOTICE)
+    end
+
+    # @private
+    def log_info(msg)
+      log(msg, LOG_LEVEL_INFO)
+    end
+
+    # @private
+    def log_debug(msg)
+      log(msg, LOG_LEVEL_DEBUG)
+    end
+
+    # @private
+    def log_trace(msg)
+      log(msg, LOG_LEVEL_TRACE)
     end
 
     private
+
+    # Add a message to the log of this core.
+    def log(msg, level = LOG_LEVEL_INFO)
+      @loggers.each{ |logger| logger.call(msg, level) }
+      return if level > @log_level
+      prefix = "\x1B[%dm" % [41, 31, 33, 34, 0, 35, 90][level - 1]
+      suffix = "\x1B[0m"
+      msg.each_line(chomp: true){ |line|
+        puts "%s[%s] %s%s" % [prefix, Time.now.strftime('%F %T.%L'), line, suffix]
+      }
+    end
 
     # Socket thread permanently monitors sockets for R/W activity
     def run_socket_thread
@@ -409,9 +466,9 @@ module ED2K
     def new_connection(socket)
       addr = socket.remote_address
       if host = get_server(address: addr)
-        log("Received new incoming connection from known server #{host.format_name()}")
+        log_debug("Received new incoming connection from known server #{host.format_name()}")
       elsif host = get_client(address: addr)
-        log("Received new incoming connection from known client #{host.format_name()}")
+        log_debug("Received new incoming connection from known client #{host.format_name()}")
       else
         host = add_client(socket: socket)
       end
@@ -491,20 +548,20 @@ module ED2K
     def connect
       setup()
       if !@socket || @socket.closed?
-        @core.log("Connecting to #{format_name()}...")
+        @core.log_debug("Connecting to #{format_name()}...")
         @socket = Socket.new(:INET, :STREAM)
       end
       @socket.connect_nonblock(@address) == 0
     rescue Errno::EISCONN
-      @core.log("Connected to #{format_name()}")
+      @core.log_debug("Connected to #{format_name()}")
       true   # We are connected
     rescue Errno::EINPROGRESS, Errno::EALREADY, Errno::EWOULDBLOCK
       nil    # Connection in progress
     rescue Errno::ECONNREFUSED
-      @core.log("Failed to connect to #{format_name()}")
+      @core.log_debug("Failed to connect to #{format_name()}")
       false  # The host is unreachable
     rescue
-      @core.log("Unknown error connecting to #{format_name()}")
+      @core.log_debug("Unknown error connecting to #{format_name()}")
       false  # Some other connection error
     end
 
@@ -518,7 +575,7 @@ module ED2K
       close_for_writing()
 
       # Close underlying connection
-      @core.log("Disconnected from #{format_name()}")
+      @core.log_debug("Disconnected from #{format_name()}")
       @socket.close
       @socket = nil
     end
@@ -603,7 +660,7 @@ module ED2K
     rescue IO::WaitWritable                # Cannot write any more
       sent
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
-      @core.log("Connection was lost while writing to #{format_name()}")
+      @core.log_debug("Connection was lost while writing to #{format_name()}")
       close_for_writing()
       sent == 0 ? -1 : sent
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
@@ -636,11 +693,11 @@ module ED2K
     rescue IO::WaitReadable                # Nothing to read
       0
     rescue EOFError                        # Peer stopped writing
-      @core.log("EOF received from #{format_name()}")
+      @core.log_debug("EOF received from #{format_name()}")
       close_for_reading()
       -1
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
-      @core.log("Connection was lost while reading from #{format_name()}")
+      @core.log_debug("Connection was lost while reading from #{format_name()}")
       close_for_reading()
       -1
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
@@ -658,7 +715,8 @@ module ED2K
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size, opcode].pack('CL<C')))
       @core.stats[:out_packets] += 1
-      @core.log("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
+      @core.log_debug("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
+      @core.log_trace(ED2K::serialize(payload)) if @log_traces
       true
     end
 
@@ -682,7 +740,7 @@ module ED2K
       when OP_EMULEPROT
         data = parse_emule_packet(opcode, packet)
       when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
-        @core.log("Received unsupported ed2k protocol #{protocol}")
+        @core.log_debug("Received unsupported ed2k protocol #{protocol}")
         return true
       else
         raise "Received unknown ed2k protocol #{protocol}"
@@ -693,7 +751,7 @@ module ED2K
       @core.stats[:in_packets] += 1
       true
     rescue => e
-      @core.log(e.message)
+      @core.log_debug(e.message)
       @core.stats[:in_packets_bad] += 1
       false
     end
@@ -820,7 +878,7 @@ module ED2K
         when 0x11..0x20
           value = stream.read(type - 16).force_encoding('UTF-8')
         else
-          @core.log("Received unsupported tag type %#.2x" % type)
+          @core.log_debug("Received unsupported tag type %#.2x" % type)
           next
         end
 
