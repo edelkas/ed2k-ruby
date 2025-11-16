@@ -48,7 +48,7 @@
 # [char]   opcode
 # ```
 # The `protocol` field specifies what family of operations to utilize (*original*, *extended*, *packed*, *kademlia*, *packed kademlia*).
-# The `size` field is the length of the payload in bytes, excluding the header itself.
+# The `size` field is the length of the payload in bytes minus 5 (i.e. excluding the protocol and size fields).
 # The `opcode` field specifies what operation is being performed. The same opcode might have different meanings in different protocols.
 #
 # Another important aspect of the protocol are **tags**, which are tuples formed by a `type`, a `length` and a `value`. They allow

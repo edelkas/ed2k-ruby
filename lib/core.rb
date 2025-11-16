@@ -56,7 +56,7 @@ module ED2K
       @clients = {}
       @loggers = []
       @log_level = log_level
-      @log_traces = send_trace
+      @log_traces = log_traces
       @control_socket = nil
       @handlers = {}
       reload_preferences()
@@ -236,6 +236,7 @@ module ED2K
     # last command, usually due to malformed parameters, incorrect protocol being used, or something similar.
     # @see Server#parse_reject
     # @yieldparam server [Server] The server that sent this packet.
+    # @yieldparam payload [String] This will be empty, but is left here for compatibility.
     # @return [Proc] The resulting handler
     def handle_reject(&handler)
       @handlers[OP_EDONKEYPROT][OP_REJECT] = handler
@@ -345,8 +346,9 @@ module ED2K
       @servers[key] = server
     end
 
-    # The following logging helper methods shouldn't really be called by the user, but they can't be private either
-    # because other classes need to use them.
+    # The following methods shouldn't really be called by the user of the gem while designing their client, but they can't
+    # be private either because other classes need to use them.
+
     # @private
     def log_fatal(msg)
       log(msg, LOG_LEVEL_FATAL)
@@ -379,7 +381,14 @@ module ED2K
 
     # @private
     def log_trace(msg)
+      return unless @log_traces
+      msg = ED2K::serialize(msg) if msg.encoding.to_s == "ASCII-8BIT"
       log(msg, LOG_LEVEL_TRACE)
+    end
+
+    # @private
+    def run_handler(protocol, opcode, peer, data)
+      @handlers&.[](protocol)&.[](opcode)&.call(peer, data)
     end
 
     private
@@ -606,8 +615,8 @@ module ED2K
     def close_for_reading(clear = false)
       @readable = false
       @socket.shutdown(Socket::SHUT_RD)
-      @read_buffer.clear
       return if !clear
+      @read_buffer.clear
       @incoming_queue.clear
       @incoming_queue.close
     end
@@ -684,6 +693,7 @@ module ED2K
       # Push complete packets into the incoming queue
       while @read_buffer.size >= PACKET_HEADER_SIZE
         protocol, size, opcode = @read_buffer.unpack('CL<C')
+        size -= 1 # Size field includes opcode, but opcode is part of header
         break if @read_buffer.size < PACKET_HEADER_SIZE + size
         @incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
       end
@@ -713,10 +723,10 @@ module ED2K
     def queue_packet(protocol, opcode, payload = '', control = true)
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
-      queue.push(payload.prepend([protocol, payload.size, opcode].pack('CL<C')))
+      queue.push(payload.prepend([protocol, payload.size + 1, opcode].pack('CL<C')))
       @core.stats[:out_packets] += 1
       @core.log_debug("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
-      @core.log_trace(ED2K::serialize(payload)) if @log_traces
+      @core.log_trace(payload)
       true
     end
 
@@ -730,6 +740,7 @@ module ED2K
       length = packet.length
       raise "Incorrect packet length (#{length} < #{head})" if length < head
       protocol, size, opcode = packet.unpack('CL<C')
+      size -= 1
       raise "Incorrect packet length (#{length} vs #{head + size})" if length != head + size
       packet.slice!(0, head)
 
@@ -747,10 +758,10 @@ module ED2K
       end
 
       # Run the custom handler
-      @core.handlers&.[](protocol)&.[](opcode)&.call(self, data) if data
-      @core.stats[:in_packets] += 1
+      raise "Received corrupt package #{opcode} for protocol #{protocol}" if !data
+      @core.run_handler(protocol, opcode, self, data)
       true
-    rescue => e
+    rescue RuntimeError => e
       @core.log_debug(e.message)
       @core.stats[:in_packets_bad] += 1
       false

@@ -95,7 +95,7 @@ module ED2K
     # that the custom handlers can consume it.
     # @param opcode [Integer] The packet's identifying opcode.
     # @param packet [String] The packet's payload, without the header.
-    # @return Packet-specific processed payload.
+    # @return Packet-specific processed payload, or `nil` if processing failed.
     def parse_edonkey_packet(opcode, packet)
       case opcode
       when OP_REJECT
@@ -118,10 +118,9 @@ module ED2K
 
     # Received when our last command was rejected by the server. There's no payload.
     # @see Core#handle_reject
-    # @todo Returning nil is problematic because then the handler won't be run
     def parse_reject()
       @core.log_debug("Last command was rejected by server #{format_name()}")
-      nil
+      ''
     end
 
     # Contains the server's list of other known servers. Received after being requested by the client via {#send_server_list_request}.
@@ -164,10 +163,10 @@ module ED2K
         return
       end
       length, messages = packet.unpack('S<A*')
-      struct = ServerMessageStruct.new(messages.split("\r\n").map(&:strip))
-      struct.messages.each{ |msg|
+      messages = messages.split("\r\n").map(&:strip).each{ |msg|
         @core.log_info("Received server message from #{format_name()}: #{msg}")
       }
+      ServerMessageStruct.new(messages)
     end
 
     # Received whenever our session ID changes in the server.
