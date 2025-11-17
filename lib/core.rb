@@ -137,6 +137,7 @@ module ED2K
     # Change some individual configurations. Only non-null parameters will actually be changed.
     # @param tcp_port [Integer] Port our client will be listening to for incoming TCP connections, should be reachable ("open").
     # @param udp_port [Integer] Ditto for new incoming UDP packets.
+    # @todo Prevent ports from being changed when connections have already been made. A core restart should probably be required.
     def config(tcp_port: nil, udp_port: nil)
       if tcp_port
         @tcp_port = tcp_port
@@ -669,7 +670,11 @@ module ED2K
     rescue IO::WaitWritable                # Cannot write any more
       sent
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
-      @core.log_debug("Connection was lost while writing to #{format_name()}")
+      if self.is_a?(ED2K::Server)
+        @core.log_error("Connection to server #{format_name()} was lost")
+      else
+        @core.log_debug("Connection was lost while writing to #{format_name()}")
+      end
       close_for_writing()
       sent == 0 ? -1 : sent
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
@@ -703,11 +708,19 @@ module ED2K
     rescue IO::WaitReadable                # Nothing to read
       0
     rescue EOFError                        # Peer stopped writing
-      @core.log_debug("EOF received from #{format_name()}")
+      if self.is_a?(ED2K::Server)
+        @core.log_error("Server #{format_name()} closed the connection")
+      else
+        @core.log_debug("EOF received from #{format_name()}")
+      end
       close_for_reading()
       -1
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
-      @core.log_debug("Connection was lost while reading from #{format_name()}")
+      if self.is_a?(ED2K::Server)
+        @core.log_error("Connection to server #{format_name()} was lost")
+      else
+        @core.log_debug("Connection was lost while reading from #{format_name()}")
+      end
       close_for_reading()
       -1
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
