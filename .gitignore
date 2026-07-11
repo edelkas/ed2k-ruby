@@ -1,7 +1,6 @@
 /.yardoc
 /doc
 /ext/Makefile
-/lib/test.rb
 .byebug*
 *.gem
 *.lock
