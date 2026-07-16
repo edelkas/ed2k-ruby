@@ -159,7 +159,7 @@ module ED2K
   CT_PORT          = 0x0f # TCP port we're listening to
   CT_VERSION       = 0x11 # eDonkey version (always EDONKEYVERSION = 0x3C)
   CT_SERVER_FLAGS  = 0x20 # Bitfield for some capabilities we support
-  CT_EMULE_VERSION = 0xfb # eMule version (major, minor and update packed)
+  CT_EMULE_VERSION = 0xfb # eMule version (major, minor and update packed) (eserver 17.3)
 
   # ------------ SERVER CAPABILITIES
   # Flags sent to the server during login (via CT_SERVER_FLAGS) to communicate the subset of functionalities we support
@@ -167,13 +167,13 @@ module ED2K
   # opposed to the usual predictable structure, but it doesn't provide real privacy, just a layer against simple network filters.
 
 
-  SRVCAP_ZLIB         = 0x0001 # Support compressed packets (via OP_PACKEDPROT protocol)
+  SRVCAP_ZLIB         = 0x0001 # Support compressed packets via OP_PACKEDPROT protocol (eserver 16.40 / eMule0.30b)
   SRVCAP_IP_IN_LOGIN  = 0x0002 # We send our own IP during login (unused)
-  SRVCAP_AUXPORT      = 0x0004 # ? (unused)
-  SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Server#write_tag})
+  SRVCAP_AUXPORT      = 0x0004 # Additional ports for the _server_ to listen to (unused) (eserver 16.45 / eMule0.42e)
+  SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Server#write_tag}) (eserver 16.46 / eMule0.42f)
   SRVCAP_UNICODE      = 0x0010 # Support for Unicode strings (eserver 17.1 / eMule0.44a)
-  SRVCAP_LARGEFILES   = 0x0100 # Support for 64 bit file sizes (>4GB)
-  SRVCAP_SUPPORTCRYPT = 0x0200 # Support for obfuscated connections
+  SRVCAP_LARGEFILES   = 0x0100 # Support for 64 bit file sizes (4GB to 256GB) (eserver 17.8 / emule0.47a)
+  SRVCAP_SUPPORTCRYPT = 0x0200 # Support for obfuscated connections (eserver 17.13 / eMule0.47b)
   SRVCAP_REQUESTCRYPT = 0x0400 # Request obfuscated connections to servers and clients, but allow fallback to non-obfuscated ones
   SRVCAP_REQUIRECRYPT = 0x0800 # Enforce obfuscated connectons, reject any clients and servers which don't support it, and plaintext connections
 
@@ -182,27 +182,27 @@ module ED2K
   # above server capabilities, although a slightly different subset of them.
 
 
-  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol (dserver 16.40+)
-  SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag})
+  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol (eserver 16.40 / eMule0.30b)
+  SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag}) (eserver 16.46 / eMule0.42f)
   SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
-  SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files
-  SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type
-  SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (>4GB)
-  SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP
+  SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files (eserver 17.5 / eMule0.46b)
+  SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type (eserver 17.7)
+  SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (4GB to 256GB) (eserver 17.8 / emule0.47a)
+  SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP (eserver 17.13 / eMule0.47b)
 
   # ------------ SERVER UDP FLAGS
   # Flags sent by the server on the stats request UDP packet, communicates a series of UDP-relevant capabilities
   # related to global searches, UDP obfuscation, etc.
 
 
-  SRV_UDPFLG_EXT_GETSOURCES  = 0x0001 # Supports multiple files in GetSources packet (dserver 16.40+)
-  SRV_UDPFLG_EXT_GETFILES    = 0x0002 # Supports multiple search results per packet (dserver 16.40+)
-  SRV_UDPFLG_NEWTAGS         = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag})
+  SRV_UDPFLG_EXT_GETSOURCES  = 0x0001 # Supports multiple files in GetSources packet (eserver 16.40 / eMule0.30d)
+  SRV_UDPFLG_EXT_GETFILES    = 0x0002 # Supports multiple search results per packet (eserver 16.40 / eMule0.30d)
+  SRV_UDPFLG_NEWTAGS         = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag}) (eserver 16.46 / eMule0.42f)
   SRV_UDPFLG_UNICODE         = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
-  SRV_UDPFLG_EXT_GETSOURCES2 = 0x0020 # Supports adding filesize to GetSources packet to avoid mismatches (eMule0.46a+)
-  SRV_UDPFLG_LARGEFILES      = 0x0100 # Support for 64 bit file sizes (>4GB)
-  SRV_UDPFLG_UDPOBFUSCATION  = 0x0200 # Supports protocol obfuscation for UDP communications
-  SRV_UDPFLG_TCPOBFUSCATION  = 0x0400 # Supports protocol obfuscation for TCP communications
+  SRV_UDPFLG_EXT_GETSOURCES2 = 0x0020 # Supports adding filesize to GetSources packet to avoid mismatches (eserver 17.3 / eMule0.46a)
+  SRV_UDPFLG_LARGEFILES      = 0x0100 # Support for 64 bit file sizes (4GB to 256GB) (eserver 17.8 / emule0.47a)
+  SRV_UDPFLG_UDPOBFUSCATION  = 0x0200 # Supports protocol obfuscation for UDP communications (eserver 17.13 / eMule0.47b)
+  SRV_UDPFLG_TCPOBFUSCATION  = 0x0400 # Supports protocol obfuscation for TCP communications (eserver 17.13 / eMule0.47b)
 
   # ------------ SERVER TAGS
   # These tags are used to identify different attributes of a server. They're sent in some packets, such as OP_SERVERIDENT,
