@@ -260,7 +260,7 @@ require 'socket'
 require 'stringio'
 require 'thread'
 
-if DEBUG
+if ED2K::DEBUG
   require 'byebug'
 end
 

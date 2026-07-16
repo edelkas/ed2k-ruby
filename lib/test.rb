@@ -1,8 +1,10 @@
 require_relative 'ed2k.rb'
 
 MIN_STATUS_CHALLENGE = 0x55AA0000
+INV_SERV_DESC_LEN    = 0xF0FF
 
-GlobServStatRes = Struct.new(:protocol, :opcode, :challenge, :cur_users, :cur_files, :max_users, :soft_files, :hard_files, :udp_flags, :low_id, :obf_udp_port, :obf_tcp_port, :udp_key)
+ServerStatus = Struct.new(:protocol, :opcode, :challenge, :cur_users, :cur_files, :max_users, :soft_files, :hard_files, :udp_flags, :low_id, :obf_udp_port, :obf_tcp_port, :udp_key)
+ServerDesc = Struct.new(:name, :description, :version, :dynamic_ip, :aux_ports, :other_tags)
 
 module Logger
   DEFAULT_CAPACITY = 500
@@ -158,18 +160,21 @@ class Server
 
   def initialize(name, ip, port)
     # Properties
-    @name          = name
     @ip            = ip
     @port_tcp      = port
     @port_udp      = @port_tcp + 4
     @port_tcp_obf  = @port_tcp
     @port_udp_obf  = @port_tcp + 12
-    @udp_key       = nil
+    @name          = name
+    @description   = nil
+    @version       = nil # String, e.g. "17.15"
+    @flags_udp     = nil # uint32
+    @udp_key       = nil # uint32
 
     # State
-    @packets       = Queue.new
-    @challenge     = nil
-    @key_pending   = false
+    @packets         = Queue.new
+    @challenge_stats = nil
+    @key_pending     = false
 
     # Config
     @obfuscate_tcp = false
@@ -214,28 +219,46 @@ class Server
     # Process packet
     case opcode
     when OP_GLOBSERVSTATRES
-      @packets << parse_udp_status_res(packet)
+      @packets << parse_stats(packet)
+    when OP_SERVER_DESC_RES
+      @packets << parse_description(packet)
     else
       log("Received unknown packet from %s: prot %#2x, op %#2x" % [@name, protocol, opcode])
+      @packets << packet
     end
   end
+
+  # Server capabilities sent as UDP flags in the status response
+  def supports_extended_sources()  !!@flags && @flags & SRV_UDPFLG_EXT_GETSOURCES  > 0 end
+  def supports_extended_searches() !!@flags && @flags & SRV_UDPFLG_EXT_GETFILES    > 0 end
+  def supports_new_tags()          !!@flags && @flags & SRV_UDPFLG_NEWTAGS         > 0 end
+  def supports_unicode()           !!@flags && @flags & SRV_UDPFLG_UNICODE         > 0 end
+  def supports_new_getsources()    !!@flags && @flags & SRV_UDPFLG_EXT_GETSOURCES2 > 0 end
+  def supports_large_files()       !!@flags && @flags & SRV_UDPFLG_LARGEFILES      > 0 end
+  def supports_udp_obfuscation()   !!@flags && @flags & SRV_UDPFLG_UDPOBFUSCATION  > 0 end
+  def supports_tcp_obfuscation()   !!@flags && @flags & SRV_UDPFLG_TCPOBFUSCATION  > 0 end
 
   # Crypt pings ask for the obfuscation information (ports + key) as well
   # They are never obfuscated, because we lack that info yet,
   # but the response IS obfuscated, and the key is the challenge
-  def send_status_req(crypt = false, obf: false)
+  def request_stats(crypt = false, obf: false)
     obf = false if crypt
     @key_pending = crypt
-    @challenge = crypt ? rand(1 << 32) : MIN_STATUS_CHALLENGE + rand(1 << 16)
-    packet = [OP_EDONKEYPROT, OP_GLOBSERVSTATREQ, @challenge].pack('CCL<')
+    @challenge_stats = crypt ? rand(1 << 32) : MIN_STATUS_CHALLENGE + rand(1 << 16)
+    packet = [OP_EDONKEYPROT, OP_GLOBSERVSTATREQ, @challenge_stats].pack('CCL<')
     packet << rand(16).times.map{ rand(256) }.pack('C*') if crypt
     obf = encrypt!(packet) if obf
     send_udp(packet, obf: obf || crypt)
-    log("Sent UDP status request with challenge %#2x" % [@challenge])
+    log("Sent UDP status request with challenge %#2x" % [@challenge_stats])
   end
 
-  def send_desc_req
-    packet = [OP_EDONKEYPROT, OP_SERVER_DESC_REQ, 0xF0FF].pack('CCL<')
+  # New packet (eserver 16.45+) adds a challenge, returns more fields
+  def request_description(old = false)
+    packet = [OP_EDONKEYPROT, OP_SERVER_DESC_REQ].pack('CC')
+    if !old
+      @challenge_desc = (rand(1 << 16) << 16) + INV_SERV_DESC_LEN
+      packet << [@challenge_desc].pack('L<')
+    end
     send_udp(packet)
   end
 
@@ -253,7 +276,7 @@ class Server
   end
 
   def key
-    @key_pending && @challenge || @udp_key
+    @key_pending && @challenge_stats || @udp_key
   end
 
   def build_key(random, incoming)
@@ -293,20 +316,84 @@ class Server
     true
   end
 
-  def parse_udp_status_res(data)
-    packet = GlobServStatRes.new(*data.unpack('CCL<8S<2L<'))
-    if !@challenge
+  def parse_stats(data)
+    packet = ServerStatus.new(*data.unpack('CCL<8S<2L<'))
+    if !@challenge_stats
       log("Received unrequested UDP status response, ignored")
-    elsif packet.challenge != @challenge
+      return
+    elsif packet.challenge != @challenge_stats
       log("Received UDP status response with incorrect challenge, ignored")
+      return
     else
       log("Received UDP status response: #{packet.cur_users} users, #{packet.cur_files} files.")
     end
     @key_pending = false
-    @challenge = nil
+    @challenge_stats = nil
+    @flags_udp = packet.udp_flags if packet.udp_flags
     @port_tcp_obf = packet.obf_tcp_port if packet.obf_tcp_port
     @port_udp_obf = packet.obf_udp_port if packet.obf_udp_port
     @udp_key = packet.udp_key if packet.udp_key
+    packet
+  end
+
+  # Old packet only contains name and description, new packet returns the challenge and a tag list
+  def parse_description(data)
+    packet = ServerDesc.new
+
+    # Corrupt packet
+    if data.size < 4
+      log("Received corrupt server description")
+      return
+    end
+
+    # Old-style packet
+    if data.size < 8 || data.unpack1('S<') != INV_SERV_DESC_LEN
+      name_len = data.unpack1('S<')
+      return if data.size < 4 + name_len
+      packet.name = @name = data[2, name_len]
+      desc_len = data.unpack1('S<', offset: 2 + name_len)
+      return if data.size < 4 + name_len + desc_len
+      packet.description = @description = data[4 + name_len, desc_len]
+      log("Received old server description: name = #{@name}, description = #{@description}")
+      padding = data.size - 4 - name_len - desc_len
+      log("Received #{padding} extra bytes in old server description") if padding > 0
+      return packet
+    end
+
+    # Unrequested packet
+    if !@challenge_desc
+      log("Received unrequested new server description, ignored")
+      return
+    elsif data.unpack1('L<') != @challenge_desc
+      log("Received new server description with incorrect challenge, ignored")
+      return
+    end
+
+    # New-style packet
+    @challenge_desc = nil
+    fields = {}
+    tags = read_tags(data[4..])
+    packet.other_tags = tags.each do |name, value|
+      case name
+      when ST_SERVERNAME
+        fields['name'] = packet.name = @name = value
+      when ST_DESCRIPTION
+        fields['description'] = packet.description = @description = value
+      when ST_VERSION
+        value = "%d.%02d" % [value >> 16, value & 0xFFFF] if value.is_a?(Integer)
+        fields['version'] = packet.version = @version = value
+      when ST_DYNIP
+        fields['dynamic IP'] = packet.dynamic_ip = value
+      when ST_AUXPORTSLIST
+        fields['aux ports list'] = packet.aux_ports = value.split(',').map(&:to_i)
+      else
+        log("Received unexpected tag in new server description: #{name} = #{value}")
+        next
+      end
+      tags.delete(name)
+    end
+    fields = fields.map{ |name, value| "#{name} = #{value}" }.join(', ')
+    log("Received new server description: #{fields} and #{packet.other_tags.size} unknown tags")
     packet
   end
 end
