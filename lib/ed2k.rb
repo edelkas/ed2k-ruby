@@ -39,9 +39,8 @@
 #
 # ## Packet format
 #
-# The protocol specifies both server-client and client-client messages over TCP known as _packets_. UDP is also used for
-# some particular queries, specially in the extended protocol, as well as for the Kad network, but a client can still
-# function without UDP usage. All packets are little-endian and prefaced by the following 6-byte header:
+# The protocol specifies both server-client and client-client messages over TCP known as _packets_. All TCP packets are
+# # little-endian and prefaced by the following 6-byte header:
 # ```
 # [char]   protocol
 # [uint32] size
@@ -50,6 +49,10 @@
 # The `protocol` field specifies what family of operations to utilize (*original*, *extended*, *packed*, *kademlia*, *packed kademlia*).
 # The `size` field is the length of the payload in bytes minus 5 (i.e. excluding the protocol and size fields).
 # The `opcode` field specifies what operation is being performed. The same opcode might have different meanings in different protocols.
+#
+# eMule also makes extensive use of UDP packets, particularly for three purposes: global server queries, the eMule extended
+# protocol, and the Kad network. A client can still function without UDP usage though. UDP packet headers lack the size
+# field, since it can be inferred from the UDP headers themselves.
 #
 # Another important aspect of the protocol are **tags**, which are tuples formed by a `type`, a `length` and a `value`. They allow
 # to extend the protocol by appending additional information to preexisting opcodes. An unknown tag can simply be skipped by
@@ -65,6 +68,8 @@
 # for more reasonable up-to-date ones, and many other hardcoded values (which eMule's source uses _a lot_!) are abstracted
 # to new constants instead. Constants referring to deprecated or (yet-)unimplemented features aren't ported.
 module ED2K
+  DEBUG = false # Produce a debug build (requires additional libs)
+
   # ------------ PROTOCOLS
   # The protocol is the first byte of every ed2k packet and specifies the functionality subset to use when handling it.
 
@@ -96,6 +101,15 @@ module ED2K
   # ------------ CLIENT <-> SERVER UDP OPCODES
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via UDP.
 
+
+  OP_GLOBSEARCHREQ3  = 0x90 # Global search with support for large files (>4GB)
+  OP_GLOBSEARCHREQ2  = 0x92 # Global search with multiple results per packet
+  OP_GLOBSERVSTATREQ = 0x96 # Status request / server ping
+  OP_GLOBSERVSTATRES = 0x97 # Status response (user count, file count, file limits, flags, UDP key...)
+  OP_GLOBSEARCHREQ   = 0x98 # Global search
+  OP_GLOBSEARCHRES   = 0x99 # Global search result
+  OP_SERVER_DESC_REQ = 0xA2 # Description request
+  OP_SERVER_DESC_RES = 0xA3 # Description response (name, description)
 
   # ------------ CLIENT <-> CLIENT TCP OPCODES
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via TCP.
@@ -157,7 +171,7 @@ module ED2K
   SRVCAP_IP_IN_LOGIN  = 0x0002 # We send our own IP during login (unused)
   SRVCAP_AUXPORT      = 0x0004 # ? (unused)
   SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Server#write_tag})
-  SRVCAP_UNICODE      = 0x0010 # Support for Unicode strings
+  SRVCAP_UNICODE      = 0x0010 # Support for Unicode strings (eserver 17.1 / eMule0.44a)
   SRVCAP_LARGEFILES   = 0x0100 # Support for 64 bit file sizes (>4GB)
   SRVCAP_SUPPORTCRYPT = 0x0200 # Support for obfuscated connections
   SRVCAP_REQUESTCRYPT = 0x0400 # Request obfuscated connections to servers and clients, but allow fallback to non-obfuscated ones
@@ -168,13 +182,27 @@ module ED2K
   # above server capabilities, although a slightly different subset of them.
 
 
-  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol
+  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol (dserver 16.40+)
   SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag})
-  SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings
+  SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
   SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files
   SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type
   SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (>4GB)
   SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP
+
+  # ------------ SERVER UDP FLAGS
+  # Flags sent by the server on the stats request UDP packet, communicates a series of UDP-relevant capabilities
+  # related to global searches, UDP obfuscation, etc.
+
+
+  SRV_UDPFLG_EXT_GETSOURCES  = 0x0001 # Supports multiple files in GetSources packet (dserver 16.40+)
+  SRV_UDPFLG_EXT_GETFILES    = 0x0002 # Supports multiple search results per packet (dserver 16.40+)
+  SRV_UDPFLG_NEWTAGS         = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag})
+  SRV_UDPFLG_UNICODE         = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
+  SRV_UDPFLG_EXT_GETSOURCES2 = 0x0020 # Supports adding filesize to GetSources packet to avoid mismatches (eMule0.46a+)
+  SRV_UDPFLG_LARGEFILES      = 0x0100 # Support for 64 bit file sizes (>4GB)
+  SRV_UDPFLG_UDPOBFUSCATION  = 0x0200 # Supports protocol obfuscation for UDP communications
+  SRV_UDPFLG_TCPOBFUSCATION  = 0x0400 # Supports protocol obfuscation for TCP communications
 
   # ------------ SERVER TAGS
   # These tags are used to identify different attributes of a server. They're sent in some packets, such as OP_SERVERIDENT,
@@ -197,8 +225,8 @@ module ED2K
   ST_UDPFLAGS           = 0x92 # [uint32] Server capabilities packet as a bitfield
   ST_AUXPORTSLIST       = 0x93 # [String] List of additional ports (comma-separated) in case the main one isn't available (unused)
   ST_LOWIDUSERS         = 0x94 # [uint32] Count of connected clients with low ID (unreachable)
-  ST_UDPKEY             = 0x95 # [uint32]
-  ST_UDPKEYIP           = 0x96 # [uint32]
+  ST_UDPKEY             = 0x95 # [uint32] Used for generating the encryption key during UDP obfuscation
+  ST_UDPKEYIP           = 0x96 # [uint32] IP used for getting the UDP key, which must match whenever used
   ST_TCPPORTOBFUSCATION = 0x97 # [uint16] TCP port for obfuscated connections
   ST_UDPPORTOBFUSCATION = 0x98 # [uint16] UDP port for obfuscated connections
 
@@ -226,11 +254,17 @@ module ED2K
   end
 end
 
+require 'digest'
 require 'ipaddr'
 require 'socket'
 require 'stringio'
 require 'thread'
 
+if DEBUG
+  require 'byebug'
+end
+
+require_relative 'tags.rb'
 require_relative 'core.rb'
 require_relative 'server.rb'
 require_relative 'client.rb'

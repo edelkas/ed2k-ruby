@@ -1,17 +1,4 @@
-require 'digest'
-require 'socket'
-
-DEBUG = false
-
-if DEBUG
-  require 'byebug'
-end
-
-PROT_ED2K = 0xE3
-
-OPCODE_STATUS_REQ      = 0x96
-OPCODE_STATUS_RES      = 0x97
-OPCODE_DESCRIPTION_REQ = 0xA2
+require_relative 'ed2k.rb'
 
 MIN_STATUS_CHALLENGE = 0x55AA0000
 
@@ -200,7 +187,7 @@ class Server
 
     # Try to decrypt packet in place
     was_encrypted = false
-    if key() && (@obfuscate_udp || packet[0].ord != PROT_ED2K)
+    if key() && (@obfuscate_udp || packet[0].ord != OP_EDONKEYPROT)
       log("Received unexpected encrypted UDP packet, decrypting anyway") if !@obfuscate_udp
       case status = decrypt!(packet)
       when nil
@@ -219,14 +206,14 @@ class Server
 
     # Verify packet header
     protocol, opcode = packet.unpack('C2')
-    if protocol != PROT_ED2K
+    if protocol != OP_EDONKEYPROT
       log("Unknown protocol in %s UDP packet" % [was_encrypted ? 'decrypted' : 'raw'])
       return
     end
 
     # Process packet
     case opcode
-    when OPCODE_STATUS_RES
+    when OP_GLOBSERVSTATRES
       @packets << parse_udp_status_res(packet)
     else
       log("Received unknown packet from %s: prot %#2x, op %#2x" % [@name, protocol, opcode])
@@ -240,7 +227,7 @@ class Server
     obf = false if crypt
     @key_pending = crypt
     @challenge = crypt ? rand(1 << 32) : MIN_STATUS_CHALLENGE + rand(1 << 16)
-    packet = [PROT_ED2K, OPCODE_STATUS_REQ, @challenge].pack('CCL<')
+    packet = [OP_EDONKEYPROT, OP_GLOBSERVSTATREQ, @challenge].pack('CCL<')
     packet << rand(16).times.map{ rand(256) }.pack('C*') if crypt
     obf = encrypt!(packet) if obf
     send_udp(packet, obf: obf || crypt)
@@ -248,7 +235,7 @@ class Server
   end
 
   def send_desc_req
-    packet = [PROT_ED2K, OPCODE_DESCRIPTION_REQ, 0xF0FF].pack('CCL<')
+    packet = [OP_EDONKEYPROT, OP_SERVER_DESC_REQ, 0xF0FF].pack('CCL<')
     send_udp(packet)
   end
 
@@ -281,8 +268,8 @@ class Server
     random = rand(1 << 16)
     key = build_key(random, false)
     rc4 = RC4.new(key)
-    protocol = PROT_ED2K
-    protocol = rand(256) while protocol == PROT_ED2K
+    protocol = OP_EDONKEYPROT
+    protocol = rand(256) while protocol == OP_EDONKEYPROT
     packet.prepend([0x13EF24D5, 0].pack('L<C'))
     rc4.encrypt!(packet)
     packet.prepend([protocol, random].pack('CS<'))
@@ -293,7 +280,7 @@ class Server
   def decrypt!(packet)
     return false if packet.size < 8 || !key() # crypt header doesn't fit
     protocol, random = packet.unpack('CS<')
-    return false if protocol == PROT_ED2K # unencrypted
+    return false if protocol == OP_EDONKEYPROT # unencrypted
     key = build_key(random, true)
     rc4 = RC4.new(key)
     packet.slice!(0, 3)
