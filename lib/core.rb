@@ -58,6 +58,7 @@ module ED2K
       @log_level = log_level
       @log_traces = log_traces
       @control_socket = nil
+      @waker = nil
       @handlers = {}
       reload_preferences()
       init_stats()
@@ -74,6 +75,7 @@ module ED2K
       @control_socket = Socket.new(:INET, :STREAM)
       @control_socket.bind(Socket.pack_sockaddr_in(@tcp_port, '0.0.0.0'))
       @control_socket.listen(MAX_SOCKET_QUEUE)
+      init_waker()
       start_socket_thread()
       start_packet_thread()
       log_info("Started core")
@@ -97,6 +99,10 @@ module ED2K
         log_info("Stopped TCP server on port #{@control_socket.local_address.ip_port}")
         @control_socket.close()
         @control_socket = nil
+      end
+      if @waker
+        @waker.close
+        @waker = nil
       end
       @connections.each{ |fileno, conn| disconnect(conn) }
       return false if !stop_packet_thread()
@@ -156,7 +162,7 @@ module ED2K
     def start_socket_thread
       @thSockRun = true
       return @thSock if @thSock&.alive?
-      @thSockFreq = THREAD_FREQUENCY
+      @thSockFreq = THREAD_FREQUENCY # Deprecated, no longer using a rate-limit approach
       @thSockTick = Time.now
       @thSock = Thread.new{ run_socket_thread() }
       log_debug("Started socket thread: Data transfer enabled. Listening on TCP port #{@tcp_port}.")
@@ -182,6 +188,7 @@ module ED2K
     def stop_socket_thread
       return true if !@thSock&.alive?
       @thSockRun = false
+      wake_socket_thread()
       return false if !@thSock.join(THREAD_TIMEOUT)
       @thSock.kill
       log_debug("Killed socket thread: Stopped data transfer.")
@@ -392,6 +399,15 @@ module ED2K
       @handlers&.[](protocol)&.[](opcode)&.call(peer, data)
     end
 
+    # @private
+    # Wake up the socket thread by writing to the waker socket, interrupting the select so that newly queued
+    # outgoing packets are noticed immediately instead of after the select timeout.
+    def wake_socket_thread
+      @waker&.send('!', 0)
+    rescue IOError, SystemCallError
+      # Waker is closed or broken, the socket thread will still notice the work after the select timeout
+    end
+
     private
 
     # Add a message to the log of this core.
@@ -411,24 +427,27 @@ module ED2K
         # Block until next socket activity
         to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
         to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
-        to_read.push(@control_socket)
+        to_read.push(@control_socket, @waker)
         readable, writable = IO.select(to_read, to_write, [], TIMEOUT_WAIT)
 
         if readable && (!readable.empty? || !writable.empty?)
-          # Read from sockets
+          # Read from sockets, draining each one until no more data is available
           readable.each do |socket|
             # New incoming connection, accept it
             next new_connection(socket.accept) if socket == @control_socket
 
+            # Waker signal, drain it (its only purpose was to interrupt the select)
+            next drain_waker() if socket == @waker
+
             # Server or client activity, read data
             connection = @connections[socket.fileno]
-            read = connection.read(SOCKET_READ_SIZE)
+            nil while connection.read(SOCKET_READ_SIZE) == SOCKET_READ_SIZE
           end
 
-          # Write to sockets
+          # Write to sockets, draining each one until it won't take more data or we run out
           writable.each do |socket|
             connection = @connections[socket.fileno]
-            written = connection.write(SOCKET_WRITE_SIZE)
+            nil while connection.write(SOCKET_WRITE_SIZE) == SOCKET_WRITE_SIZE
           end
         end
 
@@ -436,12 +455,6 @@ module ED2K
         @connections.each do |fileno, conn|
           disconnect(conn) if !conn.alive?
         end
-
-        # Prepare next iteration
-        current_time = Time.now
-        elapsed = current_time - @thSockTick
-        @thSockTick = current_time
-        sleep(@thSockFreq - elapsed) if elapsed < @thSockFreq
       end
     end
 
@@ -461,6 +474,20 @@ module ED2K
       end
     end
 
+    # Initialize the waker socket, a loopback UDP socket connected to itself. Any thread can write to it to interrupt
+    # the socket thread's select and have it recompute the select sets right away.
+    def init_waker
+      @waker = Socket.new(:INET, :DGRAM)
+      @waker.bind(Socket.pack_sockaddr_in(0, '127.0.0.1'))
+      @waker.connect(@waker.local_address)
+    end
+
+    # Discard any pending datagrams from the waker socket so the select doesn't keep triggering for them
+    def drain_waker
+      loop { @waker.recv_nonblock(16) }
+    rescue IO::WaitReadable
+    end
+
     # Initialize the structure storing all connections that need to be monitored for either read or write activity.
     # We use a hash keyed on the underlying socket's file descriptor.
     def init_connections
@@ -470,6 +497,7 @@ module ED2K
     # Add a connection for IO monitoring
     def add_connection(conn)
       @connections[conn.socket.fileno] = conn
+      wake_socket_thread()
     end
 
     # Parse a new incoming connection and retrieve it (if already known) or create it
@@ -737,6 +765,7 @@ module ED2K
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size + 1, opcode].pack('CL<C')))
+      @core.wake_socket_thread()
       @core.stats[:out_packets] += 1
       @core.log_debug("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
       @core.log_trace(payload)
