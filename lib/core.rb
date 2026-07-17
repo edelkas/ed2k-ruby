@@ -59,6 +59,7 @@ module ED2K
       @log_traces = log_traces
       @control_socket = nil
       @waker = nil
+      @ready_queue = Queue.new
       @handlers = {}
       reload_preferences()
       init_stats()
@@ -174,7 +175,7 @@ module ED2K
     def start_packet_thread
       @thPackRun = true
       return @thPack if @thPack&.alive?
-      @thPackFreq = THREAD_FREQUENCY
+      @thPackFreq = THREAD_FREQUENCY # Deprecated, packet thread is now event-based (blocks on the ready queue)
       @thPackTick = Time.now
       @thPack = Thread.new{ run_packet_thread() }
       log_debug("Started packet thread: Monitoring incoming packets.")
@@ -203,6 +204,7 @@ module ED2K
     def stop_packet_thread
       return true if !@thPack&.alive?
       @thPackRun = false
+      @ready_queue.push(nil) # Unblock the pop so the thread notices the cleared run flag and exits
       return false if !@thPack.join(THREAD_TIMEOUT)
       @thPack.kill
       log_debug("Killed packet thread: Stopped monitoring incoming packets.")
@@ -400,6 +402,14 @@ module ED2K
     end
 
     # @private
+    # Schedule a connection to have one of its pending incoming packets processed by the packet thread. Called once per
+    # received packet, so the number of tokens in the ready queue always matches the number of packets waiting to be
+    # processed across all connections.
+    def schedule_packet(conn)
+      @ready_queue.push(conn)
+    end
+
+    # @private
     # Wake up the socket thread by writing to the waker socket, interrupting the select so that newly queued
     # outgoing packets are noticed immediately instead of after the select timeout.
     def wake_socket_thread
@@ -458,19 +468,14 @@ module ED2K
       end
     end
 
-    # Packet thread monitors the incoming packet queue for new received packets to parse and process
+    # Packet thread monitors the ready queue for connections with new received packets to parse and process. Each entry
+    # in the ready queue is a scheduling token (a connection reference) pushed once per received packet, so we process
+    # exactly one packet per token. The blocking pop means the thread consumes no resources while idle.
     def run_packet_thread
       while @thPackRun
-        # Consume all new packets
-        @connections.each do |fileno, conn|
-          conn.process_packets
-        end
-
-        # Prepare next iteration
-        current_time = Time.now
-        elapsed = current_time - @thPackTick
-        @thPackTick = current_time
-        sleep(@thPackFreq - elapsed) if elapsed < @thPackFreq
+        conn = @ready_queue.pop
+        next if conn.nil? # Sentinel pushed on shutdown (or spurious), re-check the run flag
+        conn.process_one_packet
       end
     end
 
@@ -729,6 +734,7 @@ module ED2K
         size -= 1 # Size field includes opcode, but opcode is part of header
         break if @read_buffer.size < PACKET_HEADER_SIZE + size
         @incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
+        @core.schedule_packet(self)
       end
 
       @core.stats[:in_data] += received
@@ -809,17 +815,15 @@ module ED2K
       false
     end
 
-    # Consumes and processes all the currently pending packets from the incoming queue
-    # @return [Integer] Amount of successfully processed packets in this call
-    def process_packets
-      packets = 0
-      loop do
-        packet = @incoming_queue.pop(true)
-        packets += 1 if process_packet(packet)
-      end
-      packets
-    rescue ThreadError
-      packets
+    # Consumes and processes a single pending packet from the incoming queue, corresponding to one scheduling token
+    # popped by the packet thread. If the queue is empty (e.g. it was cleared on disconnect and this is a stale token)
+    # the call is a harmless no-op.
+    # @return [Boolean] `true` if a packet was processed, `false` if there was none or it was invalid
+    def process_one_packet
+      packet = @incoming_queue.pop(true)
+      packet ? process_packet(packet) : false # nil means the queue was closed and drained (disconnected peer)
+    rescue ThreadError # Queue empty but still open: stale token for an already-drained connection
+      false
     end
 
   end # Connection
