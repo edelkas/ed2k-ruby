@@ -39,8 +39,9 @@ module ED2K
     LOG_LEVEL_DEBUG   = 6         # Verbose information, such as control packets sent, protocol errors, etc
     LOG_LEVEL_TRACE   = 7         # Extremely verbose information, such as data dumps
     MAX_SOCKET_QUEUE  = 128       # Max connections with unfinished handshakes (referred to as "half-open" in eMule)
-    SOCKET_READ_SIZE  = 16 * 1024 # Maximum data in bytes to read from each socket in a single non-blocking call
-    SOCKET_WRITE_SIZE = 16 * 1024 # Maximum data in bytes to write to each socket in a single non-blocking call
+    TCP_READ_SIZE     = 16 * 1024 # Maximum data in bytes to read from each TCP socket per non-blocking call
+    TCP_WRITE_SIZE    = 16 * 1024 # Maximum data in bytes to write to each TCP socket per non-blocking call
+    UDP_READ_SIZE     = 64 * 1024 # Maximum size in bytes of a single received UDP datagram (a whole datagram is read at once)
     THREAD_FREQUENCY  = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
     THREAD_TIMEOUT    = 2         # Maximum time in seconds to wait for a loop iteration to finish when stopping a thread
     TIMEOUT_WAIT      = 0.5       # Maximum time in seconds to wait for sockets to be readable/writable before selecting again
@@ -57,10 +58,13 @@ module ED2K
       @loggers = []
       @log_level = log_level
       @log_traces = log_traces
-      @control_socket = nil
-      @waker = nil
-      @ready_queue = Queue.new
-      @handlers = {}
+      @tcp_socket = nil
+      @udp_socket = nil
+      @waker_socket = nil # Wakes up socket thread select to send outgoing TCP and UDP packets
+      @parse_ready = Queue.new # Wakes up packet thread to parse incoming TCP and UDP packets
+      @write_ready = Queue.new # Connections ready to send a new UDP packet, not necessary for TCP (they each have their own queues)
+      @tcp_handlers = ::Hash.new { |h, k| h[k] = {} }
+      @udp_handlers = ::Hash.new { |h, k| h[k] = {} }
       reload_preferences()
       init_stats()
       init_connections()
@@ -73,21 +77,16 @@ module ED2K
     # @return [Boolean] Whether the core was started successfully or not.
     def start(port = DEFAULT_TCP_PORT)
       config(tcp_port: port)
-      @control_socket = Socket.new(:INET, :STREAM)
-      @control_socket.bind(Socket.pack_sockaddr_in(@tcp_port, '0.0.0.0'))
-      @control_socket.listen(MAX_SOCKET_QUEUE)
+      return unless init_tcp_socket()
+      return unless init_udp_socket()
       init_waker()
       start_socket_thread()
       start_packet_thread()
       log_info("Started core")
       true
-    rescue Errno::EADDRINUSE
-      log_error("Failed to start core: The TCP port #{@tcp_port} is already in use")
-      @control_socket = nil
-      false
     rescue => e
       log_error("Unknown error starting core: #{e}")
-      @control_socket = nil
+      @tcp_socket = nil
       false
     end
 
@@ -96,14 +95,19 @@ module ED2K
     # @todo Add an option to forcefully stop (kill) the core, or perhaps a different method
     def stop
       return false if !stop_socket_thread()
-      if @control_socket
-        log_info("Stopped TCP server on port #{@control_socket.local_address.ip_port}")
-        @control_socket.close()
-        @control_socket = nil
+      if @tcp_socket
+        log_info("Stopped TCP server on port #{@tcp_socket.local_address.ip_port}")
+        @tcp_socket.close()
+        @tcp_socket = nil
       end
-      if @waker
-        @waker.close
-        @waker = nil
+      if @waker_socket
+        @waker_socket.close
+        @waker_socket = nil
+      end
+      if @udp_socket
+        log_info("Stopped UDP server on port #{@udp_socket.local_address.ip_port}")
+        @udp_socket.close
+        @udp_socket = nil
       end
       @connections.each{ |fileno, conn| disconnect(conn) }
       return false if !stop_packet_thread()
@@ -204,7 +208,7 @@ module ED2K
     def stop_packet_thread
       return true if !@thPack&.alive?
       @thPackRun = false
-      @ready_queue.push(nil) # Unblock the pop so the thread notices the cleared run flag and exits
+      @parse_ready.push(nil) # Unblock the pop so the thread notices the cleared run flag and exits
       return false if !@thPack.join(THREAD_TIMEOUT)
       @thPack.kill
       log_debug("Killed packet thread: Stopped monitoring incoming packets.")
@@ -249,7 +253,7 @@ module ED2K
     # @yieldparam payload [String] This will be empty, but is left here for compatibility.
     # @return [Proc] The resulting handler
     def handle_reject(&handler)
-      @handlers[OP_EDONKEYPROT][OP_REJECT] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_REJECT] = handler
     end
 
     # Add a handler for the server list packet. It contains a server's list of other known servers as (IP, Port) pairs.
@@ -260,7 +264,7 @@ module ED2K
     # @yieldparam payload [Server::ServerListStruct] Contains the list of servers' IP and port pairs.
     # @return [Proc] The resulting handler
     def handle_server_list(&handler)
-      @handlers[OP_EDONKEYPROT][OP_SERVERLIST] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_SERVERLIST] = handler
     end
 
     # Add a handler for the server status packet. It contains the server's current user and file count, and is usually
@@ -270,7 +274,7 @@ module ED2K
     # @yieldparam payload [Server::ServerStatusStruct] Contains the server's user and file count.
     # @return [Proc] The resulting handler
     def handle_server_status(&handler)
-      @handlers[OP_EDONKEYPROT][OP_SERVERSTATUS] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_SERVERSTATUS] = handler
     end
 
     # Add a handler for the server message packet.
@@ -287,7 +291,7 @@ module ED2K
     # @yieldparam payload [Server::ServerMessageStruct] Contains the list of messages.
     # @return [Proc] The resulting handler
     def handle_server_message(&handler)
-      @handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
     end
 
     # Add a handler for the server ID change packet.
@@ -299,7 +303,7 @@ module ED2K
     # @yieldparam payload [Server::IdChangeStruct] Contains our new ID, server flags, etc.
     # @return [Proc] The resulting handler
     def handle_id_change(&handler)
-      @handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
     end
 
     # Add a handler for the server identification packet. It contains the hash (a sort of GUID to identify the server),
@@ -310,7 +314,7 @@ module ED2K
     # @yieldparam payload [Server::ServerIdentificationStruct] Contains the server's hash, IP, port, name and description.
     # @return [Proc] The resulting handler
     def handle_server_identification(&handler)
-      @handlers[OP_EDONKEYPROT][OP_SERVERIDENT] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_SERVERIDENT] = handler
     end
 
     # Get a known client by address. Only one of the parameters needs to be specified.
@@ -397,23 +401,40 @@ module ED2K
     end
 
     # @private
-    def run_handler(protocol, opcode, peer, data)
-      @handlers&.[](protocol)&.[](opcode)&.call(peer, data)
+    def run_tcp_handler(protocol, opcode, peer, data)
+      @tcp_handlers&.[](protocol)&.[](opcode)&.call(peer, data)
+    end
+
+    # @private
+    # Run a handler for a packet received over UDP. UDP opcodes overlap TCP ones but mean different things, so UDP
+    # handlers live in their own registry, separate from the TCP handlers used by {#run_tcp_handler}.
+    def run_udp_handler(protocol, opcode, peer, data)
+      @udp_handlers&.[](protocol)&.[](opcode)&.call(peer, data)
     end
 
     # @private
     # Schedule a connection to have one of its pending incoming packets processed by the packet thread. Called once per
     # received packet, so the number of tokens in the ready queue always matches the number of packets waiting to be
-    # processed across all connections.
-    def schedule_packet(conn)
-      @ready_queue.push(conn)
+    # processed across all connections. The channel (:tcp or :udp) selects which of the connection's incoming queues the
+    # packet thread will pop from and how it will be parsed.
+    def schedule_packet(conn, channel = :tcp)
+      @parse_ready.push([conn, channel])
+    end
+
+    # @private
+    # Schedule a connection to have one of its queued outgoing UDP datagrams sent by the socket thread. Called once per
+    # queued datagram, so the number of tokens in the send-readiness queue matches the number of datagrams waiting to be
+    # sent across all connections. Wakes the socket thread so it adds the UDP socket to the select write set right away.
+    def schedule_udp_send(conn)
+      @write_ready.push(conn)
+      wake_socket_thread()
     end
 
     # @private
     # Wake up the socket thread by writing to the waker socket, interrupting the select so that newly queued
     # outgoing packets are noticed immediately instead of after the select timeout.
     def wake_socket_thread
-      @waker&.send('!', 0)
+      @waker_socket&.send('!', 0)
     rescue IOError, SystemCallError
       # Waker is closed or broken, the socket thread will still notice the work after the select timeout
     end
@@ -437,27 +458,34 @@ module ED2K
         # Block until next socket activity
         to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
         to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
-        to_read.push(@control_socket, @waker)
+        to_read.push(@tcp_socket, @waker_socket, @udp_socket)
+        to_write.push(@udp_socket) if !@write_ready.empty?
         readable, writable = IO.select(to_read, to_write, [], TIMEOUT_WAIT)
 
         if readable && (!readable.empty? || !writable.empty?)
           # Read from sockets, draining each one until no more data is available
           readable.each do |socket|
             # New incoming connection, accept it
-            next new_connection(socket.accept) if socket == @control_socket
+            next new_connection(socket.accept) if socket == @tcp_socket
 
             # Waker signal, drain it (its only purpose was to interrupt the select)
-            next drain_waker() if socket == @waker
+            next drain_waker() if socket == @waker_socket
+
+            # Incoming UDP datagrams on the shared UDP socket, demux and route them by sender
+            next receive_udp() if socket == @udp_socket
 
             # Server or client activity, read data
             connection = @connections[socket.fileno]
-            nil while connection.read(SOCKET_READ_SIZE) == SOCKET_READ_SIZE
+            nil while connection.read(TCP_READ_SIZE) == TCP_READ_SIZE
           end
 
           # Write to sockets, draining each one until it won't take more data or we run out
           writable.each do |socket|
+            # Pending outgoing UDP datagrams on the shared UDP socket, send them for whichever connections queued them
+            next send_udp() if socket == @udp_socket
+
             connection = @connections[socket.fileno]
-            nil while connection.write(SOCKET_WRITE_SIZE) == SOCKET_WRITE_SIZE
+            nil while connection.write(TCP_WRITE_SIZE) == TCP_WRITE_SIZE
           end
         end
 
@@ -469,28 +497,99 @@ module ED2K
     end
 
     # Packet thread monitors the ready queue for connections with new received packets to parse and process. Each entry
-    # in the ready queue is a scheduling token (a connection reference) pushed once per received packet, so we process
-    # exactly one packet per token. The blocking pop means the thread consumes no resources while idle.
+    # in the ready queue is a scheduling token, a [connection, channel] pair pushed once per received packet (channel is
+    # :tcp or :udp), so we process exactly one packet per token. The blocking pop means the thread consumes no resources
+    # while idle.
     def run_packet_thread
       while @thPackRun
-        conn = @ready_queue.pop
-        next if conn.nil? # Sentinel pushed on shutdown (or spurious), re-check the run flag
-        conn.process_one_packet
+        token = @parse_ready.pop
+        next if token.nil? # Sentinel pushed on shutdown (or spurious), re-check the run flag
+        conn, channel = token
+        conn.process_one_packet(channel)
       end
     end
 
     # Initialize the waker socket, a loopback UDP socket connected to itself. Any thread can write to it to interrupt
     # the socket thread's select and have it recompute the select sets right away.
     def init_waker
-      @waker = Socket.new(:INET, :DGRAM)
-      @waker.bind(Socket.pack_sockaddr_in(0, '127.0.0.1'))
-      @waker.connect(@waker.local_address)
+      @waker_socket = Socket.new(:INET, :DGRAM)
+      @waker_socket.bind(Socket.pack_sockaddr_in(0, '127.0.0.1'))
+      @waker_socket.connect(@waker_socket.local_address)
     end
 
     # Discard any pending datagrams from the waker socket so the select doesn't keep triggering for them
     def drain_waker
-      loop { @waker.recv_nonblock(16) }
+      loop { @waker_socket.recv_nonblock(16) }
     rescue IO::WaitReadable
+    end
+
+    # Initialize TCP control socket. This socket is mainly used to receive incoming connections from other clients,
+    # although it's also used by servers to verify if we're reachable after logging in, in which case we'll be
+    # assigned a High ID.
+    def init_tcp_socket
+      @tcp_socket = Socket.new(:INET, :STREAM)
+      @tcp_socket.bind(Socket.pack_sockaddr_in(@tcp_port, '0.0.0.0'))
+      @tcp_socket.listen(MAX_SOCKET_QUEUE)
+      true
+    rescue Errno::EADDRINUSE
+      log_error("Failed to start core: The TCP port #{@tcp_port} is already in use")
+      @tcp_socket = nil
+      false
+    end
+
+    # Initialize the single UDP socket shared by the whole core. Unlike TCP, where each connection owns a socket, all UDP
+    # traffic (to and from every server and client) goes through this one socket bound to our UDP port. It's monitored by
+    # the socket thread for both reading (incoming datagrams) and writing (queued outgoing datagrams).
+    def init_udp_socket
+      @udp_socket = Socket.new(:INET, :DGRAM)
+      @udp_socket.bind(Socket.pack_sockaddr_in(@udp_port, '0.0.0.0'))
+      true
+    rescue Errno::EADDRINUSE
+      log_error("Failed to start core: The UDP port #{@udp_port} is already in use")
+      @udp_socket = nil
+      false
+    end
+
+    # Read and route all currently available UDP datagrams. Since datagrams are self-contained there's no reassembly: each
+    # one is a complete packet. We demultiplex by sender IP to the corresponding server or client and hand it off to that
+    # connection's incoming UDP queue, scheduling it for the packet thread just like a TCP packet. Datagrams from unknown
+    # peers are dropped (they can't be attributed to a connection yet).
+    def receive_udp
+      loop do
+        data, addr = @udp_socket.recvfrom_nonblock(UDP_READ_SIZE)
+        @stats[:in_data] += data.bytesize
+        conn = get_client(ip: addr.ip_address) || get_server(ip: addr.ip_address)
+        if conn
+          conn.enqueue_incoming_udp(data)
+          schedule_packet(conn, :udp)
+        else
+          log_debug("Received UDP datagram from unknown peer #{addr.ip_address}:#{addr.ip_port}, dropping")
+        end
+      end
+    rescue IO::WaitReadable # No more datagrams to read
+    end
+
+    # Send as many queued outgoing UDP datagrams as possible through the shared UDP socket. Each token in the send-readiness
+    # queue corresponds to one datagram queued on some connection, so we pop a token, pop that connection's next datagram
+    # and send it to the connection's UDP address. If the send buffer is full we requeue the datagram and stop, retrying
+    # when the socket reports writable again. Datagrams are best-effort, so send errors just drop the datagram.
+    def send_udp
+      loop do
+        conn = @write_ready.pop(true)
+        packet = conn.dequeue_outgoing_udp
+        next if !packet || !conn.udp_address # Stale token (queue already drained) or unknown destination
+        begin
+          @udp_socket.sendmsg_nonblock(packet, 0, conn.udp_address)
+          @stats[:out_data] += packet.bytesize
+        rescue IO::WaitWritable # Send buffer full, requeue and retry on the next writable event
+          conn.requeue_outgoing_udp(packet)
+          @write_ready.push(conn)
+          break
+        rescue SystemCallError => e # e.g. ECONNREFUSED from a prior ICMP port-unreachable; UDP is best-effort, drop it
+          log_debug("Failed to send UDP datagram to #{conn.format_name()}: #{e.message}")
+        end
+      end
+    rescue ThreadError # No more pending outgoing UDP datagrams
     end
 
     # Initialize the structure storing all connections that need to be monitored for either read or write activity.
@@ -515,7 +614,7 @@ module ED2K
       else
         host = add_client(socket: socket)
       end
-      host.setup
+      host.tcp_setup
       add_connection(host)
     end
 
@@ -540,13 +639,15 @@ module ED2K
 
   # Encapsulates the functionality that is common to each node connecting to the ed2k network, that is, both servers and
   # clients. It's a wrapper around a socket that manages I/O and its associated resources. Internally, each connection has
-  # 2 buffers (read and write) as well as 3 thread-safe queues:
+  # 2 buffers (for partial TCP reads and writes) as well as 5 thread-safe queues:
   #
-  # - The **incoming** queue stores ed2k packets as they are received from the socket.
-  # - The **standard** queue stores outgoing data packets to send through the socket, i.e., the files being uploaded.
+  # - The **incoming TCP** queue stores ed2k packets as they are received from the socket.
+  # - Similarly, an **incoming UDP** queue.
+  # - The **standard** queue stores outgoing **TCP** data packets to send through the socket, i.e., the files being uploaded.
   #   They usually comprise the majority of the bandwidth.
-  # - The **control** queue stores outgoing control packets to send through the socket, i.e., any packet that is not
+  # - The **control** queue stores outgoing **TCP** control packets to send through the socket, i.e., any packet that is not
   #   data. They take precedence over data packets to minimize their delay.
+  # - The **outgoing UDP** queue. All UDP packets are control packets, so there's no distinction here.
   #
   # Incoming packets are placed in the queue by the socket thread and processed by the packet thread. Conversely, outgoing
   # packets are placed in the queue by the packet thread, to be sent by the socket thread.
@@ -555,7 +656,16 @@ module ED2K
 
     # The address structure, containing info such as IP, port, socket type and protocol.
     # @return [Addrinfo]
-    attr_reader :address
+    attr_reader :tcp_address
+
+    # The address structure used to send UDP datagrams to this peer, if known. By convention its port is the peer's TCP
+    # port plus 4. May be `nil` if we don't (yet) know the peer's IP or port.
+    # @return [Addrinfo,nil]
+    attr_reader :udp_address
+
+    # The UDP port this peer listens on, by convention its TCP port plus 4. May be `nil` if the peer's port is unknown.
+    # @return [Integer,nil]
+    attr_reader :udp_port
 
     # The underlying `Socket` used by this connection.
     # @return [Socket]
@@ -565,10 +675,21 @@ module ED2K
     # @return [Core]
     attr_reader :core
 
+    # Initialize the UDP-related resources of this connection. Unlike {#tcp_setup}, which prepares the per-connection TCP
+    # socket and is called when a TCP connection is established, this is called once at construction because UDP traffic
+    # (e.g. global server queries) can happen without ever establishing a TCP connection. There are no partial-data
+    # buffers since UDP datagrams are self-contained. The UDP address is derived from the peer's IP and TCP port (+4).
+    def udp_setup
+      @udp_incoming_queue = Queue.new
+      @udp_outgoing_queue = Queue.new
+      @udp_port = @tcp_port ? @tcp_port + 4 : nil
+      @udp_address = (@ip && @udp_port) ? Addrinfo.new(Socket.pack_sockaddr_in(@udp_port, @ip)) : nil
+    end
+
     # Initialize resources to prepare communication. This includes R/W buffers, packet queues and state variables.
     # Must be called once before exchanging messages with a server/client, usually right before or after establishing
     # a connection.
-    def setup
+    def tcp_setup
       # Current state of the connection
       @readable = true
       @writable = true
@@ -578,7 +699,7 @@ module ED2K
       @write_buffer = ''
 
       # Queues to hold complete incoming and outgoing packets
-      @incoming_queue = Queue.new
+      @tcp_incoming_queue = Queue.new
       @control_queue  = Queue.new
       @standard_queue = Queue.new
 
@@ -589,12 +710,12 @@ module ED2K
     # get a connection. Should only be called when we're the ones initiating the connection.
     # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
     def connect
-      setup()
+      tcp_setup()
       if !@socket || @socket.closed?
         @core.log_debug("Connecting to #{format_name()}...")
         @socket = Socket.new(:INET, :STREAM)
       end
-      @socket.connect_nonblock(@address) == 0
+      @socket.connect_nonblock(@tcp_address) == 0
     rescue Errno::EISCONN
       @core.log_debug("Connected to #{format_name()}")
       true   # We are connected
@@ -638,7 +759,7 @@ module ED2K
     # Whether at least one end of the socket (R/W) is still open and functioning, or we still have unfinished work with
     # this connection, such as processing received packets.
     def alive?
-      @readable || @writable || !@incoming_queue.empty?
+      @readable || @writable || !@tcp_incoming_queue.empty?
     end
 
     # Stop reading from the socket, usually called when the other end of the socket has stopped writing. This shuts down
@@ -651,8 +772,8 @@ module ED2K
       @socket.shutdown(Socket::SHUT_RD)
       return if !clear
       @read_buffer.clear
-      @incoming_queue.clear
-      @incoming_queue.close
+      @tcp_incoming_queue.clear
+      @tcp_incoming_queue.close
     end
 
     # Stop writing to a socket, called when the other end of the socket has stopped reading, or when we are done writing.
@@ -733,7 +854,7 @@ module ED2K
         protocol, size, opcode = @read_buffer.unpack('CL<C')
         size -= 1 # Size field includes opcode, but opcode is part of header
         break if @read_buffer.size < PACKET_HEADER_SIZE + size
-        @incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
+        @tcp_incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
         @core.schedule_packet(self)
       end
 
@@ -761,13 +882,13 @@ module ED2K
       -1
     end
 
-    # Queue an ed2k packet to be sent through the socket.
+    # Queue an ed2k packet to be sent through the TCP socket.
     # @param protocol [Integer] A 1-byte integer specifying the protocol to use ({OP_EDONKEYPROT}, {OP_EMULEPROT}...)
     # @param opcode [Integer] A 1-byte integer specifying the operation to perform
     # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
     # @param control [Boolean] Whether the packet is a control packet or a data (standard) packet.
     # @return [Boolean] Whether the packet was successfully queued in the corresponding packet queue or not.
-    def queue_packet(protocol, opcode, payload = '', control = true)
+    def queue_tcp_packet(protocol, opcode, payload = '', control = true)
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size + 1, opcode].pack('CL<C')))
@@ -778,10 +899,43 @@ module ED2K
       true
     end
 
+    # Queue an ed2k packet to be sent to this peer through the shared UDP socket. Unlike {#queue_tcp_packet} there is no
+    # control/data distinction (all UDP traffic is control) and the header carries no size field. Fails if we don't know
+    # the peer's UDP address yet.
+    # @param protocol [Integer] A 1-byte integer specifying the protocol to use ({OP_EDONKEYPROT}, {OP_EMULEPROT}...)
+    # @param opcode [Integer] A 1-byte integer specifying the operation to perform
+    # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
+    # @return [Boolean] Whether the packet was successfully queued for sending or not.
+    def queue_udp_packet(protocol, opcode, payload = '')
+      return false if !@udp_address
+      size = payload.size
+      @udp_outgoing_queue.push(payload.prepend([protocol, opcode].pack('CC')))
+      @core.schedule_udp_send(self)
+      @core.stats[:out_packets] += 1
+      @core.log_debug("Sent UDP packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, size, format_name()])
+      @core.log_trace(payload)
+      true
+    end
+
+    # Pop the next queued outgoing UDP datagram, or `nil` if there is none. Called by the socket thread once per send token.
+    # @return [String,nil] The raw datagram to send, or `nil` if the queue is empty.
+    def dequeue_outgoing_udp
+      @udp_outgoing_queue.pop(true)
+    rescue ThreadError # Queue empty: stale token for an already-drained connection
+      nil
+    end
+
+    # Put a datagram back on the outgoing UDP queue, used when the send buffer was full and the send must be retried. Order
+    # is not preserved, which is fine since UDP delivery is unordered anyway.
+    # @param packet [String] The raw datagram that could not be sent.
+    def requeue_outgoing_udp(packet)
+      @udp_outgoing_queue.push(packet)
+    end
+
     # Process a new incoming packet and run the corresponding handler
     # @param packet [String] A binary string containing the raw packet data
     # @return [Boolean] Whether the packet was parsed and processed successfully or not
-    def process_packet(packet)
+    def process_tcp_packet(packet)
       # Sanity checks
       @core.stats[:in_packets] += 1
       head = PACKET_HEADER_SIZE
@@ -795,9 +949,9 @@ module ED2K
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
       case protocol
       when OP_EDONKEYPROT
-        data = parse_edonkey_packet(opcode, packet)
+        data = parse_edonkey_tcp_packet(opcode, packet)
       when OP_EMULEPROT
-        data = parse_emule_packet(opcode, packet)
+        data = parse_emule_tcp_packet(opcode, packet)
       when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
         @core.log_debug("Received unsupported ed2k protocol #{protocol}")
         return true
@@ -807,7 +961,7 @@ module ED2K
 
       # Run the custom handler
       raise "Received corrupt package #{opcode} for protocol #{protocol}" if !data
-      @core.run_handler(protocol, opcode, self, data)
+      @core.run_tcp_handler(protocol, opcode, self, data)
       true
     rescue RuntimeError => e
       @core.log_debug(e.message)
@@ -815,13 +969,79 @@ module ED2K
       false
     end
 
-    # Consumes and processes a single pending packet from the incoming queue, corresponding to one scheduling token
-    # popped by the packet thread. If the queue is empty (e.g. it was cleared on disconnect and this is a stale token)
-    # the call is a harmless no-op.
+    # Process a new incoming UDP packet and run the corresponding handler. Unlike {#process_tcp_packet}, the header has no size
+    # field (the datagram boundary gives the length) and the opcodes are interpreted through the UDP-specific parsers and
+    # handler registry, since UDP opcodes overlap the TCP ones but carry different meanings.
+    # @param packet [String] A binary string containing the raw datagram
+    # @return [Boolean] Whether the packet was parsed and processed successfully or not
+    def process_udp_packet(packet)
+      # Sanity checks
+      @core.stats[:in_packets] += 1
+      length = packet.length
+      raise "Incorrect UDP packet length (#{length} < #{UDP_PACKET_HEADER_SIZE})" if length < UDP_PACKET_HEADER_SIZE
+      protocol, opcode = packet.unpack('CC')
+      packet.slice!(0, UDP_PACKET_HEADER_SIZE)
+
+      # Parse packet - depending on protocol - and obtain opcode-specific packet data
+      case protocol
+      when OP_EDONKEYPROT
+        data = parse_edonkey_udp_packet(opcode, packet)
+      when OP_EMULEPROT
+        data = parse_emule_udp_packet(opcode, packet)
+      when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
+        @core.log_debug("Received unsupported ed2k UDP protocol #{protocol}")
+        return true
+      else
+        raise "Received unknown ed2k UDP protocol #{protocol}"
+      end
+
+      # Run the custom handler
+      raise "Received corrupt UDP package #{opcode} for protocol #{protocol}" if !data
+      @core.run_udp_handler(protocol, opcode, self, data)
+      true
+    rescue RuntimeError => e
+      @core.log_debug(e.message)
+      @core.stats[:in_packets_bad] += 1
+      false
+    end
+
+    # Parse a packet sent by this peer with the standard edonkey protocol over UDP. Default no-op that reports the opcode
+    # as unsupported; servers and clients override this to handle the UDP opcodes relevant to them.
+    # @param opcode [Integer] The packet's identifying opcode.
+    # @param packet [String] The packet's payload, without the header.
+    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
+    def parse_edonkey_udp_packet(opcode, packet)
+      @core.log_debug("Received unsupported edonkey UDP packet %#.2x from #{format_name()}" % opcode)
+      nil
+    end
+
+    # Parse a packet sent by this peer with the extended eMule protocol over UDP. Default no-op that reports the opcode as
+    # unsupported; servers and clients override this to handle the UDP opcodes relevant to them.
+    # @param opcode [Integer] The packet's identifying opcode.
+    # @param packet [String] The packet's payload, without the header.
+    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
+    def parse_emule_udp_packet(opcode, packet)
+      @core.log_debug("Received unsupported eMule UDP packet %#.2x from #{format_name()}" % opcode)
+      nil
+    end
+
+    # Append a received UDP datagram to this connection's incoming UDP queue, to later be processed by the packet thread.
+    # Called by the socket thread after it demultiplexes a datagram to this connection.
+    # @param packet [String] A binary string containing the raw datagram
+    def enqueue_incoming_udp(packet)
+      @udp_incoming_queue.push(packet)
+    end
+
+    # Consumes and processes a single pending packet from one of the incoming queues, corresponding to one scheduling
+    # token popped by the packet thread. The channel (:tcp or :udp) selects the queue and the parser. If the queue is
+    # empty (e.g. it was cleared on disconnect and this is a stale token) the call is a harmless no-op.
+    # @param channel [Symbol] Either :tcp or :udp, matching the queue the packet was scheduled on.
     # @return [Boolean] `true` if a packet was processed, `false` if there was none or it was invalid
-    def process_one_packet
-      packet = @incoming_queue.pop(true)
-      packet ? process_packet(packet) : false # nil means the queue was closed and drained (disconnected peer)
+    def process_one_packet(channel = :tcp)
+      queue = channel == :udp ? @udp_incoming_queue : @tcp_incoming_queue
+      packet = queue.pop(true)
+      return false if !packet # nil means the queue was closed and drained (disconnected peer)
+      channel == :udp ? process_udp_packet(packet) : process_tcp_packet(packet)
     rescue ThreadError # Queue empty but still open: stale token for an already-drained connection
       false
     end

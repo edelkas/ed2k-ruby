@@ -49,11 +49,11 @@ module ED2K
       @socket = socket
       if @socket
         addr = @socket.remote_address
-        @ip      = addr.ip_address
-        @port    = addr.ip_port
-        @address = Addrinfo.new(Socket.pack_sockaddr_in(@port, @ip))
+        @ip          = addr.ip_address
+        @tcp_port    = addr.ip_port
+        @tcp_address = Addrinfo.new(Socket.pack_sockaddr_in(@tcp_port, @ip))
       else
-        @port = port
+        @tcp_port = port
       end
 
       # Other properties
@@ -65,12 +65,15 @@ module ED2K
       # Capabilities
       @supports_obfuscation  = false
       @supports_secure_ident = false
+
+      # UDP resources (incoming queue, UDP address), independent of any TCP connection
+      udp_setup()
     end
 
     # Format the client's name in human-readable form
     # @return [String] `ID@IP:Port 'Name'`
     def format_name
-      ip = @address ? "%s:%d" % [@address.ip_address, @address.ip_port] : '?'
+      ip = @tcp_address ? "%s:%d" % [@tcp_address.ip_address, @tcp_address.ip_port] : '?'
       name = @name || '?'
       "#{@id}@#{ip} '#{name}'"
     end

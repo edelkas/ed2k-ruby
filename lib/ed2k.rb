@@ -150,6 +150,7 @@ module ED2K
   EMBLOCKSIZE             = 180 * 1024      # Blocks are the secondary file subdivision (180KB). Clients usually request these blocks to other clients.
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
   PACKET_HEADER_SIZE      = 6               # The header of every ed2k packet contains the protocol (char), size (uint32) and opcode (char).
+  UDP_PACKET_HEADER_SIZE  = 2               # UDP packet headers lack the size field (inferred from the datagram), leaving just protocol (char) and opcode (char).
 
   # ------------ CONNECTION TAGS
   # These are sent when connecting to a server (login) or another client (hello) to exchange information about our client

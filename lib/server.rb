@@ -66,9 +66,9 @@ module ED2K
       @core = core
 
       # Basic properties we need to establish a connection or send packets
-      @ip      = ip
-      @port    = port
-      @address = Addrinfo.new(Socket.pack_sockaddr_in(@port, @ip))
+      @ip          = ip
+      @tcp_port    = port
+      @tcp_address = Addrinfo.new(Socket.pack_sockaddr_in(@tcp_port, @ip))
 
       # These properties aren't known until we query the server's status and description
       @name        = ''
@@ -82,12 +82,15 @@ module ED2K
       @hard_limit  = -1
       @version     = -1
       @obfuscation = false
+
+      # UDP resources (incoming queue, UDP address), independent of any TCP connection
+      udp_setup()
     end
 
     # Format the server's name in human-readable form
     # @return [String] Nick (IP:Port)
     def format_name
-      ip = "%s:%d" % [@address.ip_address, @address.ip_port]
+      ip = "%s:%d" % [@tcp_address.ip_address, @tcp_address.ip_port]
       !@name.empty? ? "#{@name} (#{ip})" : ip
     end
 
@@ -96,7 +99,7 @@ module ED2K
     # @param opcode [Integer] The packet's identifying opcode.
     # @param packet [String] The packet's payload, without the header.
     # @return Packet-specific processed payload, or `nil` if processing failed.
-    def parse_edonkey_packet(opcode, packet)
+    def parse_edonkey_tcp_packet(opcode, packet)
       case opcode
       when OP_REJECT
         parse_reject()
@@ -272,13 +275,13 @@ module ED2K
       version = version_major << 17 | version_minor << 10 | version_update << 7
       data << write_tag(CT_EMULE_VERSION, version)
 
-      queue_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
+      queue_tcp_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
       @core.log_info("Sent login request to #{format_name()}")
     end
 
     # Request the list of known servers to this server.
     def send_server_list_request
-      queue_packet(OP_EDONKEYPROT, OP_GETSERVERLIST)
+      queue_tcp_packet(OP_EDONKEYPROT, OP_GETSERVERLIST)
       @core.log_debug("Sent server list request to #{format_name()}")
     end
 
