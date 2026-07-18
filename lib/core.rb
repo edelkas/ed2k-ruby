@@ -39,8 +39,8 @@ module ED2K
     LOG_LEVEL_DEBUG   = 6         # Verbose information, such as control packets sent, protocol errors, etc
     LOG_LEVEL_TRACE   = 7         # Extremely verbose information, such as data dumps
     MAX_SOCKET_QUEUE  = 128       # Max connections with unfinished handshakes (referred to as "half-open" in eMule)
-    TCP_READ_SIZE     = 16 * 1024 # Maximum data in bytes to read from each TCP socket per non-blocking call
-    TCP_WRITE_SIZE    = 16 * 1024 # Maximum data in bytes to write to each TCP socket per non-blocking call
+    TCP_READ_SIZE     = 64 * 1024 # Maximum data in bytes to read from each TCP socket per non-blocking call
+    TCP_WRITE_SIZE    = 64 * 1024 # Maximum data in bytes to write to each TCP socket per non-blocking call
     UDP_READ_SIZE     = 64 * 1024 # Maximum size in bytes of a single received UDP datagram (a whole datagram is read at once)
     THREAD_FREQUENCY  = 0.05      # Minimum time in seconds between loop iterations of the core threads, for CPU throttling
     THREAD_TIMEOUT    = 2         # Maximum time in seconds to wait for a loop iteration to finish when stopping a thread
@@ -462,37 +462,36 @@ module ED2K
         to_write.push(@udp_socket) if !@write_ready.empty?
         readable, writable = IO.select(to_read, to_write, [], TIMEOUT_WAIT)
 
-        if readable && (!readable.empty? || !writable.empty?)
-          # Read from sockets, draining each one until no more data is available
-          readable.each do |socket|
-            # New incoming connection, accept it
-            next new_connection(socket.accept) if socket == @tcp_socket
-
-            # Waker signal, drain it (its only purpose was to interrupt the select)
-            next drain_waker() if socket == @waker_socket
-
-            # Incoming UDP datagrams on the shared UDP socket, demux and route them by sender
-            next receive_udp() if socket == @udp_socket
-
-            # Server or client activity, read data
-            connection = @connections[socket.fileno]
-            nil while connection.read(TCP_READ_SIZE) == TCP_READ_SIZE
-          end
-
-          # Write to sockets, draining each one until it won't take more data or we run out
-          writable.each do |socket|
-            # Pending outgoing UDP datagrams on the shared UDP socket, send them for whichever connections queued them
-            next send_udp() if socket == @udp_socket
-
-            connection = @connections[socket.fileno]
-            nil while connection.write(TCP_WRITE_SIZE) == TCP_WRITE_SIZE
-          end
-        end
-
         # Ditch dead sockets
         @connections.each do |fileno, conn|
           disconnect(conn) if !conn.alive?
         end
+
+        # Read from sockets, fixed budget per socket so fast sockets don't starve the bandwidth
+        readable.each do |socket|
+          # New incoming connection, accept it
+          next new_connection(socket.accept) if socket == @tcp_socket
+
+          # Waker signal, drain it (its only purpose was to interrupt the select)
+          next drain_waker() if socket == @waker_socket
+
+          # Incoming UDP datagrams on the shared UDP socket, demux and route them by sender
+          next receive_udp() if socket == @udp_socket
+
+          # Server or client activity, read data
+          connection = @connections[socket.fileno]
+          connection.read(TCP_READ_SIZE)
+        end if readable&.any?
+
+        # Write to sockets, sending at most one budget's worth to each one, for the same fairness reasons as above
+        writable.each do |socket|
+          # Pending outgoing UDP datagrams on the shared UDP socket, send them for whichever connections queued them
+          next send_udp() if socket == @udp_socket
+
+          # Send pending TCP packets
+          connection = @connections[socket.fileno]
+          connection.write(TCP_WRITE_SIZE)
+        end if writable&.any?
       end
     end
 
