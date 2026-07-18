@@ -317,20 +317,33 @@ module ED2K
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERIDENT] = handler
     end
 
-    # Get a known client by address. Only one of the parameters needs to be specified.
+    # Get a known client by address. Only one of the parameters needs to be specified. Clients are keyed by IP alone,
+    # so a single host cannot take up more than one client slot by connecting from several ports.
     # @param address [Addrinfo] The full address structure of the client.
     # @param ip [String] The IPv4 address of the client.
     # @return [Client,nil] The client object if known, `nil` otherwise.
     def get_client(address: nil, ip: nil)
-      @clients[ED2K::pack_ip(ip || address.ip_address)]
+      @clients[ip || address.ip_address]
     end
 
-    # Get a known server by address. Only one of the parameters needs to be specified.
-    # @param address [Addrinfo] The full address structure of the server.
+    # Get a known server by address. Only one of `address` and `ip` needs to be specified. Servers are keyed by both IP
+    # and port, since several servers may share a single IP address, so `port` should be given whenever it's known to
+    # get an exact match. Note that the port is never inferred from `address`, because the addresses we have at hand
+    # (the remote end of an incoming connection, or the sender of a UDP datagram) carry the port the server happens to
+    # be sending _from_, not the TCP port it's listening on, which is the one used in the key. When no port is supplied
+    # the lookup falls back to matching the IP alone, and thus returns the first server found at that address.
+    # When no port is given and several servers do share the IP, `prefer` can be supplied to break the tie: it's a
+    # callable receiving each candidate and returning whether it's a likely match (e.g. whether it's awaiting an answer
+    # from us). The first candidate is returned if the preference doesn't single one out.
+    # @param address [Addrinfo] The full address structure of the server (only its IP is used).
     # @param ip [String] The IPv4 address of the server.
+    # @param port [Integer] The TCP port the server is listening on.
+    # @param prefer [#call] Predicate used to break ties between servers sharing the IP.
     # @return [Server,nil] The server object if known, `nil` otherwise.
-    def get_server(address: nil, ip: nil)
-      @servers[ED2K::pack_ip(ip || address.ip_address)]
+    def get_server(address: nil, ip: nil, port: nil, prefer: nil)
+      ip ||= address.ip_address
+      return @servers[server_key(ip, port)] if port
+      resolve_server(ip, prefer).first
     end
 
     # Add a new client to the list of known ones. If we're already connected we can simply supply the socket, otherwise
@@ -341,20 +354,27 @@ module ED2K
     # @return [Client] The newly created client instance.
     # @todo Careful with the distinction between ID and IP.
     def add_client(ip: nil, port: nil, socket: nil)
-      key = ED2K::pack_ip(ip || socket.remote_address.ip_address)
+      key = ip || socket.remote_address.ip_address
       return @clients[key] if @clients.key?(key)
       client = Client.new(id: ip, port: port, socket: socket, core: self)
       log_debug("New known client: #{client.format_name()}")
       @clients[key] = client
     end
 
-    # Add a new server to the list of known ones.
+    # Add a new server to the list of known ones. Servers are keyed by both IP and port, so several servers sharing a
+    # single IP address can be known at once, which does happen in practice.
     # @param ip [String] The IPv4 address of the server.
     # @param port [Integer] The port to connect to.
     # @return [Server] The newly created server instance.
     def add_server(ip, port)
-      key = ED2K::pack_ip(ip)
+      key = server_key(ip, port)
       return @servers[key] if @servers.key?(key)
+      shared = servers_at(ip)
+      if !shared.empty?
+        log_debug("New server at an already known IP, %s now hosts %d servers (%s)" % [
+          ip, shared.size + 1, (shared.map{ |srv| srv.tcp_address.ip_port } << port).join(', ')
+        ])
+      end
       server = Server.new(ip, port, core: self)
       log_debug("New known server: #{server.format_name()}")
       @servers[key] = server
@@ -470,7 +490,7 @@ module ED2K
         # Read from sockets, fixed budget per socket so fast sockets don't starve the bandwidth
         readable.each do |socket|
           # New incoming connection, accept it
-          next new_connection(socket.accept) if socket == @tcp_socket
+          next new_connection(socket.accept.first) if socket == @tcp_socket
 
           # Waker signal, drain it (its only purpose was to interrupt the select)
           next drain_waker() if socket == @waker_socket
@@ -555,10 +575,26 @@ module ED2K
     # peers are dropped (they can't be attributed to a connection yet).
     def receive_udp
       loop do
-        data, addr = @udp_socket.recvfrom_nonblock(UDP_READ_SIZE)
+        begin
+          data, addr = @udp_socket.recvfrom_nonblock(UDP_READ_SIZE)
+        rescue Errno::ECONNRESET, Errno::ENETRESET => e
+          # A datagram we sent earlier bounced back as an ICMP unreachable, which the OS reports here rather than on the
+          # send itself. The socket is still perfectly usable, so just note it and carry on draining.
+          log_debug("Previous UDP datagram could not be delivered: #{e.message}")
+          next
+        end
         @stats[:in_data] += data.bytesize
-        conn = get_client(ip: addr.ip_address) || get_server(ip: addr.ip_address)
+        conn = get_client(ip: addr.ip_address)
+        if !conn
+          conn, ambiguous = resolve_server(addr.ip_address, ->(srv){ srv.pending_udp? })
+          # Unlike an incoming TCP connection we don't drop the datagram, since for many UDP replies (source requests,
+          # global searches...) the exact server it came from doesn't really matter. It does for others though (status
+          # or description requests), hence the warning.
+          log_warning("Received UDP datagram from #{addr.ip_address}:#{addr.ip_port}, but several known servers share "\
+                      "that IP and none is uniquely awaiting an answer, attributing it to #{conn.format_name()}") if ambiguous
+        end
         if conn
+          conn.udp_answered
           conn.enqueue_incoming_udp(data)
           schedule_packet(conn, :udp)
         else
@@ -591,6 +627,39 @@ module ED2K
     rescue ThreadError # No more pending outgoing UDP datagrams
     end
 
+    # Build the key under which a server is stored in the list of known ones, which combines both its IP address and the
+    # TCP port it listens on, as opposed to clients, which are keyed by IP address alone.
+    # @param ip [String] The IPv4 address of the server.
+    # @param port [Integer] The TCP port the server is listening on.
+    # @return [String] The key, in `ip:port` form.
+    def server_key(ip, port)
+      "#{ip}:#{port}"
+    end
+
+    # All known servers listening on a given IP address. Normally there's at most one, but a single host may run
+    # several servers on different ports, which does happen in practice.
+    # @param ip [String] The IPv4 address to look up.
+    # @return [Array<Server>] The servers at that address, possibly empty.
+    def servers_at(ip)
+      @servers.each_value.select{ |server| server.tcp_address.ip_address == ip }
+    end
+
+    # Figure out which server a message came from, given only the IP address it was sent from. Incoming messages don't
+    # carry the port the server listens on (see {#get_server}), so when several servers share an IP we can't tell them
+    # apart by address alone and have to fall back on a heuristic: servers only really contact us to answer something we
+    # asked, so the caller supplies a predicate marking which candidates are awaiting an answer. If exactly one is, it's
+    # our server. Otherwise the tie is unresolved and the caller decides what to do about it.
+    # @param ip [String] The IPv4 address the message came from.
+    # @param prefer [#call,nil] Predicate telling whether a candidate is awaiting an answer from us.
+    # @return [Array(Server,Boolean)] The best candidate (`nil` if the IP is unknown), and whether it stayed ambiguous.
+    def resolve_server(ip, prefer = nil)
+      candidates = servers_at(ip)
+      return [candidates.first, false] if candidates.size <= 1
+      preferred = prefer ? candidates.select{ |server| prefer.call(server) } : []
+      return [preferred.first, false] if preferred.size == 1
+      [candidates.first, true]
+    end
+
     # Initialize the structure storing all connections that need to be monitored for either read or write activity.
     # We use a hash keyed on the underlying socket's file descriptor.
     def init_connections
@@ -603,17 +672,27 @@ module ED2K
       wake_socket_thread()
     end
 
-    # Parse a new incoming connection and retrieve it (if already known) or create it
+    # Parse a new incoming connection and retrieve it (if already known) or create it. Servers only ever connect to us to
+    # answer a login request, so that's what we use to tell apart several servers sharing the IP the connection came
+    # from. If that isn't enough we drop the connection, since attributing it to the wrong server (or, worse, taking it
+    # for a brand new client) would be more harmful than losing it.
     def new_connection(socket)
       addr = socket.remote_address
-      if host = get_server(address: addr)
+      server, ambiguous = resolve_server(addr.ip_address, ->(srv){ srv.pending_login })
+      if ambiguous
+        log_error("Received new incoming connection from #{addr.ip_address}:#{addr.ip_port}, but several known servers "\
+                  "share that IP and the login state doesn't tell them apart, dropping it")
+        return socket.close
+      end
+
+      if host = server
         log_debug("Received new incoming connection from known server #{host.format_name()}")
       elsif host = get_client(address: addr)
         log_debug("Received new incoming connection from known client #{host.format_name()}")
       else
         host = add_client(socket: socket)
       end
-      host.tcp_setup
+      host.tcp_setup(socket)
       add_connection(host)
     end
 

@@ -171,7 +171,7 @@ module ED2K
   SRVCAP_ZLIB         = 0x0001 # Support compressed packets via OP_PACKEDPROT protocol (eserver 16.40 / eMule0.30b)
   SRVCAP_IP_IN_LOGIN  = 0x0002 # We send our own IP during login (unused)
   SRVCAP_AUXPORT      = 0x0004 # Additional ports for the _server_ to listen to (unused) (eserver 16.45 / eMule0.42e)
-  SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Server#write_tag}) (eserver 16.46 / eMule0.42f)
+  SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Tag.write}) (eserver 16.46 / eMule0.42f)
   SRVCAP_UNICODE      = 0x0010 # Support for Unicode strings (eserver 17.1 / eMule0.44a)
   SRVCAP_LARGEFILES   = 0x0100 # Support for 64 bit file sizes (4GB to 256GB) (eserver 17.8 / emule0.47a)
   SRVCAP_SUPPORTCRYPT = 0x0200 # Support for obfuscated connections (eserver 17.13 / eMule0.47b)
@@ -184,7 +184,7 @@ module ED2K
 
 
   SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol (eserver 16.40 / eMule0.30b)
-  SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag}) (eserver 16.46 / eMule0.42f)
+  SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Tag.write}) (eserver 16.46 / eMule0.42f)
   SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
   SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files (eserver 17.5 / eMule0.46b)
   SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type (eserver 17.7)
@@ -198,7 +198,7 @@ module ED2K
 
   SRV_UDPFLG_EXT_GETSOURCES  = 0x0001 # Supports multiple files in GetSources packet (eserver 16.40 / eMule0.30d)
   SRV_UDPFLG_EXT_GETFILES    = 0x0002 # Supports multiple search results per packet (eserver 16.40 / eMule0.30d)
-  SRV_UDPFLG_NEWTAGS         = 0x0008 # Supports Lugdunum new-style tags (see {Server#write_tag}) (eserver 16.46 / eMule0.42f)
+  SRV_UDPFLG_NEWTAGS         = 0x0008 # Supports Lugdunum new-style tags (see {Tag.write}) (eserver 16.46 / eMule0.42f)
   SRV_UDPFLG_UNICODE         = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
   SRV_UDPFLG_EXT_GETSOURCES2 = 0x0020 # Supports adding filesize to GetSources packet to avoid mismatches (eserver 17.3 / eMule0.46a)
   SRV_UDPFLG_LARGEFILES      = 0x0100 # Support for 64 bit file sizes (4GB to 256GB) (eserver 17.8 / emule0.47a)
@@ -267,6 +267,7 @@ end
 
 require_relative 'tags.rb'
 require_relative 'core.rb'
+require_relative 'connection.rb'
 require_relative 'server.rb'
 require_relative 'client.rb'
 require_relative 'hash.rb'

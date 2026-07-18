@@ -59,6 +59,8 @@ module ED2K
     # The processed payload of an {OP_SERVERIDENT} packet (see {Core#handle_server_identification} and {#parse_server_identification})
     ServerIdentificationStruct = Struct.new(:hash, :ip, :port, :name, :description)
 
+    TIMEOUT_LOGIN = 30 # Maximum time in seconds to wait for a server's answer to our login request
+
     # @param ip [String] The public IPv4 address of the server
     # @param port [Integer] The port the server is listening to for incoming connections
     # @param core [Core] The core object to use when managing this server
@@ -83,8 +85,36 @@ module ED2K
       @version     = -1
       @obfuscation = false
 
+      # Whether we're awaiting the server's answer to our login request, and since when (see {#pending_login})
+      @pending_login = false
+      @login_time    = nil
+
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
       udp_setup()
+    end
+
+    # Whether we've sent a login request to this server and haven't received an answer yet. Servers reply to a login by
+    # opening a TCP connection back to us, to check whether we're reachable and thus deserve a High ID, and that's
+    # essentially the only reason they ever connect to us. This makes the flag a useful hint to tell apart several
+    # servers sharing a single IP address when one of them connects to us (see {Core#get_server}).
+    #
+    # An answer may simply never arrive, so the flag expires on its own after {TIMEOUT_LOGIN} seconds rather than
+    # lingering forever and skewing every later disambiguation towards this server. It's checked here, when read, so
+    # that no timer or periodic sweep is needed.
+    # @return [Boolean]
+    def pending_login
+      return false if !@pending_login
+      return true if Time.now - @login_time <= TIMEOUT_LOGIN
+      @pending_login = false
+      @core.log_debug("Login request to #{format_name()} went unanswered for #{TIMEOUT_LOGIN}s, no longer expecting a reply")
+      false
+    end
+
+    # Mark whether we're awaiting an answer to our login request, starting the countdown to {TIMEOUT_LOGIN} when we are.
+    # @param pending [Boolean] Whether the answer is now pending.
+    def pending_login=(pending)
+      @pending_login = pending
+      @login_time = pending ? Time.now : nil
     end
 
     # Format the server's name in human-readable form
@@ -122,6 +152,7 @@ module ED2K
     # Received when our last command was rejected by the server. There's no payload.
     # @see Core#handle_reject
     def parse_reject()
+      self.pending_login = false # The rejection may well be for our login request, don't wait for an answer any longer
       @core.log_debug("Last command was rejected by server #{format_name()}")
       ''
     end
@@ -183,6 +214,7 @@ module ED2K
       end
       id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
       flags ||= 0
+      self.pending_login = false # The ID assignment is the answer to our login request
       @core.log_info("Received new ID from #{format_name()}: #{id}")
       @core.log_debug("Our IP is #{ED2K::unpack_ip(ip)}") if ip
       IdChangeStruct.new(
@@ -207,7 +239,7 @@ module ED2K
         return
       end
       hash, ip, port = packet.unpack('a16L<S<')
-      tags = read_tags(packet[22..-1])
+      tags = Tag::read(packet[22..-1], core: @core)
       if !tags
         @core.log_debug("Failed to parse tags in server identification packet from #{format_name()}")
         name, description = nil, nil
@@ -232,7 +264,7 @@ module ED2K
     # @param id [Integer] Our client ID. This is assigned by the server itself, so its usually 0 the first time we connect.
     # @param port [Integer] The TCP port we are listening to for incoming connections from the server and other clients.
     # @param support_compression [Boolean] If we support compressed packets via the packed protocol ({OP_PACKEDPROT}). **Currently not available**.
-    # @param support_newtags [Boolean] If we support new-style Lugdunum tags (see {#write_tag}).
+    # @param support_newtags [Boolean] If we support new-style Lugdunum tags (see {Tag.write}).
     # @param support_largefiles [Boolean] If we support 64 bit file sizes (i.e. >4GB).
     # @param support_unicode [Boolean] If we support Unicode strings for filenames, nicknames, etc.
     # @param support_obfuscation [Boolean] If we support protocol obfuscation. **Currently not available**.
@@ -257,8 +289,8 @@ module ED2K
       # Basic user info
       tag_count = 4
       data = [hash, id, port, tag_count].pack('a16L<S<L<')
-      data << write_tag(CT_NAME, name)
-      data << write_tag(CT_VERSION, version_edonkey)
+      data << Tag::write(CT_NAME, name)
+      data << Tag::write(CT_VERSION, version_edonkey)
 
       # Client capabilities
       flags = 0
@@ -269,13 +301,14 @@ module ED2K
       flags |= SRVCAP_SUPPORTCRYPT if support_obfuscation
       flags |= SRVCAP_REQUESTCRYPT if request_obfuscation
       flags |= SRVCAP_REQUIRECRYPT if require_obfuscation
-      data << write_tag(CT_SERVER_FLAGS, flags)
+      data << Tag::write(CT_SERVER_FLAGS, flags)
 
       # Versioning info
       version = version_major << 17 | version_minor << 10 | version_update << 7
-      data << write_tag(CT_EMULE_VERSION, version)
+      data << Tag::write(CT_EMULE_VERSION, version)
 
       queue_tcp_packet(OP_EDONKEYPROT, OP_LOGINREQUEST, data)
+      self.pending_login = true
       @core.log_info("Sent login request to #{format_name()}")
     end
 

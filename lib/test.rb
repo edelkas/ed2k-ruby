@@ -372,7 +372,7 @@ class Server
     # New-style packet
     @challenge_desc = nil
     fields = {}
-    tags = read_tags(data[4..])
+    tags = Tag::read(data[4..])
     packet.other_tags = tags.each do |name, value|
       case name
       when ST_SERVERNAME

@@ -46,12 +46,32 @@ module ED2K
       @udp_outgoing_queue = Queue.new
       @udp_port = @tcp_port ? @tcp_port + 4 : nil
       @udp_address = (@ip && @udp_port) ? Addrinfo.new(Socket.pack_sockaddr_in(@udp_port, @ip)) : nil
+      @pending_udp = 0
+    end
+
+    # How many UDP queries we've sent to this peer that haven't been answered yet. Peers essentially only send us
+    # datagrams in response to our own queries, so this is used as a hint to tell apart several servers sharing a
+    # single IP address when a datagram arrives from that address (see {Core#get_server}).
+    # @return [Boolean] Whether we're awaiting at least one UDP answer from this peer.
+    def pending_udp?
+      @pending_udp > 0
+    end
+
+    # Note that a datagram we were waiting for has arrived, so it no longer counts as pending. Datagrams are
+    # best-effort and answers may never come, so the counter is only ever decremented down to zero.
+    def udp_answered
+      @pending_udp -= 1 if @pending_udp > 0
     end
 
     # Initialize resources to prepare communication. This includes R/W buffers, packet queues and state variables.
     # Must be called once before exchanging messages with a server/client, usually right before or after establishing
     # a connection.
-    def tcp_setup
+    # @param socket [Socket] The socket to communicate through, when the peer is the one that connected to us and thus
+    #        we didn't open it ourselves. Note that the peer's address is deliberately left untouched, since the port
+    #        they're connecting to us from isn't the one they listen on.
+    def tcp_setup(socket = nil)
+      @socket = socket if socket
+
       # Current state of the connection
       @readable = true
       @writable = true
@@ -273,6 +293,7 @@ module ED2K
       size = payload.size
       @udp_outgoing_queue.push(payload.prepend([protocol, opcode].pack('CC')))
       @core.schedule_udp_send(self)
+      @pending_udp += 1
       @core.stats[:out_packets] += 1
       @core.log_debug("Sent UDP packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, size, format_name()])
       @core.log_trace(payload)
