@@ -46,12 +46,17 @@ module ED2K
     THREAD_TIMEOUT    = 2         # Maximum time in seconds to wait for a loop iteration to finish when stopping a thread
     TIMEOUT_WAIT      = 0.5       # Maximum time in seconds to wait for sockets to be readable/writable before selecting again
     TIMEOUT_CONNECT   = 5         # Maximum time in seconds to wait for connections to establish
+    DEFAULT_DOWN_RATE = 0         # Default maximum download rate in bytes per second (0 = unlimited)
+    DEFAULT_UP_RATE   = 0         # Default maximum upload rate in bytes per second (0 = unlimited)
 
     # @param log_level [Integer] The log level for the default logger, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_TRACE}. If you
     #        have set a custom logger (see {#add_logger}) you may want to disable this by setting it to {LOG_LEVEL_NONE}.
     # @param log_traces [Boolean] If set to `false`, traces (the most verbose logs) won't even be sent to the loggers.
     #        This is done to save resources, since generating them could be quite heavy.
-    def initialize(log_level: LOG_LEVEL_DEBUG, log_traces: false)
+    # @param down_rate [Integer] Maximum download rate in bytes per second, aggregated over every peer. `0` is
+    #        unlimited, and costs nothing to check. See {#config} to change it on a running core.
+    # @param up_rate [Integer] Ditto for the upload rate.
+    def initialize(log_level: LOG_LEVEL_DEBUG, log_traces: false, down_rate: DEFAULT_DOWN_RATE, up_rate: DEFAULT_UP_RATE)
       @init = false
       @servers = {}
       @clients = {}
@@ -65,6 +70,8 @@ module ED2K
       @write_ready = Queue.new # Connections ready to send a new UDP packet, not necessary for TCP (they each have their own queues)
       @tcp_handlers = ::Hash.new { |h, k| h[k] = {} }
       @udp_handlers = ::Hash.new { |h, k| h[k] = {} }
+      @down_bucket = TokenBucket.new(down_rate) # Meters everything we receive, across all peers
+      @up_bucket   = TokenBucket.new(up_rate)   # Ditto for everything we send
       reload_preferences()
       init_stats()
       init_connections()
@@ -148,8 +155,11 @@ module ED2K
     # Change some individual configurations. Only non-null parameters will actually be changed.
     # @param tcp_port [Integer] Port our client will be listening to for incoming TCP connections, should be reachable ("open").
     # @param udp_port [Integer] Ditto for new incoming UDP packets.
+    # @param down_rate [Integer] Maximum download rate in bytes per second, aggregated over every peer, `0` for unlimited.
+    #        Takes effect immediately, without a burst at the previous allowance first.
+    # @param up_rate [Integer] Ditto for the upload rate.
     # @todo Prevent ports from being changed when connections have already been made. A core restart should probably be required.
-    def config(tcp_port: nil, udp_port: nil)
+    def config(tcp_port: nil, udp_port: nil, down_rate: nil, up_rate: nil)
       if tcp_port
         @tcp_port = tcp_port
         log_debug("TCP port was changed to #{@tcp_port}")
@@ -159,6 +169,30 @@ module ED2K
         @udp_port = udp_port
         log_debug("UDP port was changed to #{@udp_port}")
       end
+
+      if down_rate
+        @down_bucket.rate = down_rate
+        log_debug("Download rate limit was changed to #{format_rate(@down_bucket.rate)}")
+        wake_socket_thread()
+      end
+
+      if up_rate
+        @up_bucket.rate = up_rate
+        log_debug("Upload rate limit was changed to #{format_rate(@up_bucket.rate)}")
+        wake_socket_thread()
+      end
+    end
+
+    # The maximum download rate currently enforced, in bytes per second, or `0` if unlimited.
+    # @return [Integer]
+    def down_rate
+      @down_bucket.rate
+    end
+
+    # The maximum upload rate currently enforced, in bytes per second, or `0` if unlimited.
+    # @return [Integer]
+    def up_rate
+      @up_bucket.rate
     end
 
     # Starts the socket thread and begins monitoring network IO.
@@ -478,9 +512,24 @@ module ED2K
         # Block until next socket activity
         to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
         to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
+
+        # When a rate limit has run out of allowance we stop monitoring the peer sockets altogether until it recovers.
+        # Leaving them in the select set instead would busy-loop the thread: select is level triggered, so it would keep
+        # reporting them as ready while we decline to transfer anything. Dropping them and sleeping for exactly as long
+        # as the allowance needs to recover is both idle and prompt, which is what keeps the achieved rate at the limit
+        # rather than below it.
+        read_wait  = @down_bucket.wait_time
+        write_wait = @up_bucket.wait_time
+        to_read.clear  if read_wait > 0
+        to_write.clear if write_wait > 0
+
         to_read.push(@tcp_socket, @waker_socket, @udp_socket)
         to_write.push(@udp_socket) if !@write_ready.empty?
-        readable, writable = IO.select(to_read, to_write, [], TIMEOUT_WAIT)
+
+        timeout = TIMEOUT_WAIT
+        timeout = read_wait  if read_wait  > 0 && read_wait  < timeout
+        timeout = write_wait if write_wait > 0 && write_wait < timeout
+        readable, writable = IO.select(to_read, to_write, [], timeout)
 
         # Ditch dead sockets
         @connections.each do |fileno, conn|
@@ -498,9 +547,14 @@ module ED2K
           # Incoming UDP datagrams on the shared UDP socket, demux and route them by sender
           next receive_udp() if socket == @udp_socket
 
-          # Server or client activity, read data
+          # Server or client activity, read as much as both the per socket budget and the rate limit allow. Peers are
+          # served in turn until the allowance runs out, so whatever is left of it always goes to someone who can use
+          # it, and the limit is reached as long as the peers can collectively supply it.
           connection = @connections[socket.fileno]
-          connection.read(TCP_READ_SIZE)
+          grant = @down_bucket.take(TCP_READ_SIZE)
+          next if grant == 0
+          read = connection.read(grant)
+          @down_bucket.refund(grant - [read, 0].max) # The peer may have had less to give than we allowed for
         end if readable&.any?
 
         # Write to sockets, sending at most one budget's worth to each one, for the same fairness reasons as above
@@ -508,9 +562,12 @@ module ED2K
           # Pending outgoing UDP datagrams on the shared UDP socket, send them for whichever connections queued them
           next send_udp() if socket == @udp_socket
 
-          # Send pending TCP packets
+          # Send pending TCP packets, metered the same way as reads
           connection = @connections[socket.fileno]
-          connection.write(TCP_WRITE_SIZE)
+          grant = @up_bucket.take(TCP_WRITE_SIZE)
+          next if grant == 0
+          written = connection.write(grant)
+          @up_bucket.refund(grant - [written, 0].max) # We may have had less to send than we allowed for
         end if writable&.any?
       end
     end
@@ -584,6 +641,7 @@ module ED2K
           next
         end
         @stats[:in_data] += data.bytesize
+        @down_bucket.deduct(data.bytesize)
         conn = get_client(ip: addr.ip_address)
         if !conn
           conn, ambiguous = resolve_server(addr.ip_address, ->(srv){ srv.pending_udp? })
@@ -616,6 +674,7 @@ module ED2K
         begin
           @udp_socket.sendmsg_nonblock(packet, 0, conn.udp_address)
           @stats[:out_data] += packet.bytesize
+          @up_bucket.deduct(packet.bytesize)
         rescue IO::WaitWritable # Send buffer full, requeue and retry on the next writable event
           conn.requeue_outgoing_udp(packet)
           @write_ready.push(conn)
@@ -625,6 +684,21 @@ module ED2K
         end
       end
     rescue ThreadError # No more pending outgoing UDP datagrams
+    end
+
+    # Render a transfer rate in human readable form.
+    # @param rate [Integer] The rate in bytes per second, `0` meaning unlimited.
+    # @return [String] The formatted rate.
+    def format_rate(rate)
+      return 'unlimited' if rate == 0
+      units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+      index = 0
+      value = rate.to_f
+      while value >= 1024 && index < units.size - 1
+        value /= 1024
+        index += 1
+      end
+      "%.4g %s" % [value, units[index]]
     end
 
     # Build the key under which a server is stored in the list of known ones, which combines both its IP address and the
