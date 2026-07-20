@@ -173,32 +173,28 @@ module ED2K
 
     # Write a certain amount of data from the write buffer and the packet queues to the socket. Any packet that is popped
     # from the outgoing queues and not sent completely will remain in the buffer for the next call.
-    # @todo Can we prevent so much string slicing here?
     # @param max [Integer] Maximum amount of bytes to put on the socket. Useful for bandwidth management.
     # @return [Integer] Total amount of bytes actually writen to the socket, -1 if the socket is closed or broken.
     def write(max)
-      sent, written = 0, 0
+      sent = 0
 
       # Finish any outstanding packets
       if !@write_buffer.empty?
-        sent += written = @socket.write_nonblock(@write_buffer[0, max - sent])
-        @write_buffer.slice!(0, written)
+        sent += write_buffered(max - sent)
         return sent if !@write_buffer.empty?
       end
 
       # Send as many control packets as possible
       while sent < max && !@control_queue.empty?
         @write_buffer = @control_queue.pop
-        sent += written = @socket.write_nonblock(@write_buffer[0, max - sent])
-        @write_buffer.slice!(0, written)
+        sent += write_buffered(max - sent)
         return sent if !@write_buffer.empty?
       end
 
       # Send as many data packets as possible
       while sent < max && !@standard_queue.empty?
         @write_buffer = @standard_queue.pop
-        sent += written = @socket.write_nonblock(@write_buffer[0, max - sent])
-        @write_buffer.slice!(0, written)
+        sent += write_buffered(max - sent)
         return sent if !@write_buffer.empty?
       end
 
@@ -219,9 +215,20 @@ module ED2K
       @core.stats[:out_data] += sent
     end
 
+    # Push as much of the write buffer onto the socket as the budget allows, keeping whatever didn't fit for the next
+    # call. The buffer is handed over whole whenever it fits within the budget, which is the common case, so that the
+    # usual outgoing packet isn't copied just to be trimmed to a size it already respects.
+    # @param max [Integer] Maximum amount of bytes to put on the socket.
+    # @return [Integer] Amount of bytes actually written to the socket.
+    def write_buffered(max)
+      total = @write_buffer.bytesize
+      written = @socket.write_nonblock(total <= max ? @write_buffer : @write_buffer.byteslice(0, max))
+      @write_buffer = written == total ? '' : @write_buffer.byteslice(written, total - written)
+      written
+    end
+
     # Read a certain amount of data from the socket into the read buffer. Any complete packet will be pushed into the
     # incoming packet queue, and the remaining incomplete data will stay in the buffer for the next call.
-    # @todo Can we prevent so much string slicing here?
     # @param max [Integer] Maximum amount of bytes to read from the socket. Useful for bandwidth management.
     # @return [Integer] Total amount of bytes actually read from the socket, -1 if `EOF` was reached, or the socket is closed or broken.
     def read(max)
@@ -231,13 +238,21 @@ module ED2K
       @read_buffer << @socket.read_nonblock(max)
       received = @read_buffer.size - received
 
-      # Push complete packets into the incoming queue
-      while @read_buffer.size >= PACKET_HEADER_SIZE
-        protocol, size, opcode = @read_buffer.unpack('CL<C')
+      # Push complete packets into the incoming queue.
+      count, offset, total = 0, 0, @read_buffer.size
+      while total - offset >= PACKET_HEADER_SIZE
+        protocol, size, opcode = @read_buffer.unpack('CL<C', offset: offset)
         size -= 1 # Size field includes opcode, but opcode is part of header
-        break if @read_buffer.size < PACKET_HEADER_SIZE + size
-        @tcp_incoming_queue.push(@read_buffer.slice!(0, PACKET_HEADER_SIZE + size))
-        @core.schedule_packet(self)
+        break if total - offset < PACKET_HEADER_SIZE + size
+        @tcp_incoming_queue.push(@read_buffer.byteslice(offset, PACKET_HEADER_SIZE + size))
+        offset += PACKET_HEADER_SIZE + size
+        count += 1
+      end
+
+      # Wake up packet thread if packets were pushed. This costs CPU, so don't overdo it.
+      if offset > 0
+        @read_buffer = @read_buffer.byteslice(offset, total - offset)
+        @core.schedule_packet(self, :tcp, count)
       end
 
       @core.stats[:in_data] += received
@@ -269,14 +284,20 @@ module ED2K
     # @param opcode [Integer] A 1-byte integer specifying the operation to perform
     # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
     # @param control [Boolean] Whether the packet is a control packet or a data (standard) packet.
+    # @param wake [Boolean] Whether to wake the socket thread so it notices the packet right away instead of on its next
+    #        round. Waking costs a syscall per call, which is well worth it for a control packet, whose whole point is to
+    #        get out with minimal delay. It's a poor trade for data packets: they're queued in bulk, so the wakeups pile
+    #        up while only the first one does anything useful, and the transfer is already running steadily enough for
+    #        the socket thread to pick them up on its own. Defaults accordingly, but can be overridden either way, e.g.
+    #        to flush a lone data packet promptly or to queue a batch of control packets and wake once at the end.
     # @return [Boolean] Whether the packet was successfully queued in the corresponding packet queue or not.
-    def queue_tcp_packet(protocol, opcode, payload = '', control = true)
+    def queue_tcp_packet(protocol, opcode, payload = '', control = true, wake: control)
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size + 1, opcode].pack('CL<C')))
-      @core.wake_socket_thread()
+      @core.wake_socket_thread() if wake
       @core.stats[:out_packets] += 1
-      @core.log_debug("Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()])
+      @core.log_debug{ "Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()] }
       @core.log_trace(payload)
       true
     end
@@ -295,7 +316,7 @@ module ED2K
       @core.schedule_udp_send(self)
       @pending_udp += 1
       @core.stats[:out_packets] += 1
-      @core.log_debug("Sent UDP packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, size, format_name()])
+      @core.log_debug{ "Sent UDP packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, size, format_name()] }
       @core.log_trace(payload)
       true
     end
@@ -327,14 +348,14 @@ module ED2K
       protocol, size, opcode = packet.unpack('CL<C')
       size -= 1
       raise "Incorrect packet length (#{length} vs #{head + size})" if length != head + size
-      packet.slice!(0, head)
+      payload = packet.byteslice(head, size) # Taking the payload out is cheaper than shifting it over the header
 
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
       case protocol
       when OP_EDONKEYPROT
-        data = parse_edonkey_tcp_packet(opcode, packet)
+        data = parse_edonkey_tcp_packet(opcode, payload)
       when OP_EMULEPROT
-        data = parse_emule_tcp_packet(opcode, packet)
+        data = parse_emule_tcp_packet(opcode, payload)
       when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
         @core.log_debug("Received unsupported ed2k protocol #{protocol}")
         return true
@@ -363,14 +384,14 @@ module ED2K
       length = packet.length
       raise "Incorrect UDP packet length (#{length} < #{UDP_PACKET_HEADER_SIZE})" if length < UDP_PACKET_HEADER_SIZE
       protocol, opcode = packet.unpack('CC')
-      packet.slice!(0, UDP_PACKET_HEADER_SIZE)
+      payload = packet.byteslice(UDP_PACKET_HEADER_SIZE, length - UDP_PACKET_HEADER_SIZE)
 
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
       case protocol
       when OP_EDONKEYPROT
-        data = parse_edonkey_udp_packet(opcode, packet)
+        data = parse_edonkey_udp_packet(opcode, payload)
       when OP_EMULEPROT
-        data = parse_emule_udp_packet(opcode, packet)
+        data = parse_emule_udp_packet(opcode, payload)
       when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
         @core.log_debug("Received unsupported ed2k UDP protocol #{protocol}")
         return true
@@ -394,7 +415,7 @@ module ED2K
     # @param packet [String] The packet's payload, without the header.
     # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
     def parse_edonkey_udp_packet(opcode, packet)
-      @core.log_debug("Received unsupported edonkey UDP packet %#.2x from #{format_name()}" % opcode)
+      @core.log_debug{ "Received unsupported edonkey UDP packet %#.2x from #{format_name()}" % opcode }
       nil
     end
 
@@ -404,7 +425,7 @@ module ED2K
     # @param packet [String] The packet's payload, without the header.
     # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
     def parse_emule_udp_packet(opcode, packet)
-      @core.log_debug("Received unsupported eMule UDP packet %#.2x from #{format_name()}" % opcode)
+      @core.log_debug{ "Received unsupported eMule UDP packet %#.2x from #{format_name()}" % opcode }
       nil
     end
 

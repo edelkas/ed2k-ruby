@@ -144,7 +144,7 @@ module ED2K
       when OP_SERVERIDENT
         parse_server_identification(packet)
       else
-        @core.log_debug("Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode)
+        @core.log_debug{ "Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode }
         nil
       end
     end

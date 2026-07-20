@@ -63,7 +63,7 @@ module ED2K
           [TAGTYPE_STRING | switch, key, length, value].pack('Ca*S<a*')
         end
       when Float
-        [TAGTYPE_FLOAT32 | switch, key, value].pack('Ca*e') # Single precision ('e'), the tag type is 4 bytes wide
+        [TAGTYPE_FLOAT32 | switch, key, value].pack('Ca*e')
       else
         raise "Invalid tag value type"
       end
@@ -101,7 +101,7 @@ module ED2K
         when TAGTYPE_UINT64
           value = stream.read(8).unpack1('Q<')
         when TAGTYPE_FLOAT32
-          value = stream.read(4).unpack1('e') # Single precision ('e'), matching the 4 bytes read
+          value = stream.read(4).unpack1('e')
         when TAGTYPE_STRING
           size = stream.read(2).unpack1('S<')
           value = stream.read(size).force_encoding('UTF-8')

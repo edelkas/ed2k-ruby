@@ -103,17 +103,17 @@ module ED2K
     def stop
       return false if !stop_socket_thread()
       if @tcp_socket
-        log_info("Stopped TCP server on port #{@tcp_socket.local_address.ip_port}")
-        @tcp_socket.close()
+        log_info("Stopped TCP server on port #{socket_port(@tcp_socket) || @tcp_port}")
+        close_quietly(@tcp_socket)
         @tcp_socket = nil
       end
       if @waker_socket
-        @waker_socket.close
+        close_quietly(@waker_socket)
         @waker_socket = nil
       end
       if @udp_socket
-        log_info("Stopped UDP server on port #{@udp_socket.local_address.ip_port}")
-        @udp_socket.close
+        log_info("Stopped UDP server on port #{socket_port(@udp_socket) || @udp_port}")
+        close_quietly(@udp_socket)
         @udp_socket = nil
       end
       @connections.each{ |fileno, conn| disconnect(conn) }
@@ -417,39 +417,43 @@ module ED2K
     # The following methods shouldn't really be called by the user of the gem while designing their client, but they can't
     # be private either because other classes need to use them.
 
+    # Log methods take either a ready-made message or a block returning one. Prefer the block form wherever the call
+    # sits on a hot path, so that nothing is built when the level discards it (see {#log}).
+
     # @private
-    def log_fatal(msg)
-      log(msg, LOG_LEVEL_FATAL)
+    def log_fatal(msg = nil, &block)
+      log(msg, LOG_LEVEL_FATAL, &block)
     end
 
     # @private
-    def log_error(msg)
-      log(msg, LOG_LEVEL_ERROR)
+    def log_error(msg = nil, &block)
+      log(msg, LOG_LEVEL_ERROR, &block)
     end
 
     # @private
-    def log_warning(msg)
-      log(msg, LOG_LEVEL_WARNING)
+    def log_warning(msg = nil, &block)
+      log(msg, LOG_LEVEL_WARNING, &block)
     end
 
     # @private
-    def log_notice(msg)
-      log(msg, LOG_LEVEL_NOTICE)
+    def log_notice(msg = nil, &block)
+      log(msg, LOG_LEVEL_NOTICE, &block)
     end
 
     # @private
-    def log_info(msg)
-      log(msg, LOG_LEVEL_INFO)
+    def log_info(msg = nil, &block)
+      log(msg, LOG_LEVEL_INFO, &block)
     end
 
     # @private
-    def log_debug(msg)
-      log(msg, LOG_LEVEL_DEBUG)
+    def log_debug(msg = nil, &block)
+      log(msg, LOG_LEVEL_DEBUG, &block)
     end
 
     # @private
-    def log_trace(msg)
+    def log_trace(msg = nil)
       return unless @log_traces
+      msg = yield if block_given?
       msg = ED2K::serialize(msg) if msg.encoding.to_s == "ASCII-8BIT"
       log(msg, LOG_LEVEL_TRACE)
     end
@@ -467,12 +471,13 @@ module ED2K
     end
 
     # @private
-    # Schedule a connection to have one of its pending incoming packets processed by the packet thread. Called once per
-    # received packet, so the number of tokens in the ready queue always matches the number of packets waiting to be
-    # processed across all connections. The channel (:tcp or :udp) selects which of the connection's incoming queues the
-    # packet thread will pop from and how it will be parsed.
-    def schedule_packet(conn, channel = :tcp)
-      @parse_ready.push([conn, channel])
+    # Schedule a connection to have some of its pending incoming packets processed by the packet thread. Each token
+    # carries how many packets it accounts for, so the counts across the ready queue always add up to the number of
+    # packets waiting to be processed across all connections. The channel (:tcp or :udp) selects which of the connection's
+    # incoming queues the packet thread will pop from and how it will be parsed.
+    def schedule_packet(conn, channel = :tcp, count = 1)
+      return if count <= 0
+      @parse_ready.push([conn, channel, count])
     end
 
     # @private
@@ -495,8 +500,11 @@ module ED2K
 
     private
 
-    # Add a message to the log of this core.
-    def log(msg, level = LOG_LEVEL_INFO)
+    # Add a message to the log of this core. The message may be supplied as a block instead of a string, in which case
+    # it's only built when something is actually going to consume it. This matters on the hot paths.
+    def log(msg = nil, level = LOG_LEVEL_INFO)
+      return if block_given? && level > @log_level && @loggers.empty?
+      msg = yield if block_given?
       @loggers.each{ |logger| logger.call(msg, level) }
       return if level > @log_level
       prefix = "\x1B[%dm" % [41, 31, 33, 34, 0, 35, 90][level - 1]
@@ -573,15 +581,15 @@ module ED2K
     end
 
     # Packet thread monitors the ready queue for connections with new received packets to parse and process. Each entry
-    # in the ready queue is a scheduling token, a [connection, channel] pair pushed once per received packet (channel is
-    # :tcp or :udp), so we process exactly one packet per token. The blocking pop means the thread consumes no resources
+    # in the ready queue is a scheduling token, a [connection, channel, count] triple (channel is :tcp or :udp), so we
+    # process exactly as many packets as the token accounts for. The blocking pop means the thread consumes no resources
     # while idle.
     def run_packet_thread
       while @thPackRun
         token = @parse_ready.pop
         next if token.nil? # Sentinel pushed on shutdown (or spurious), re-check the run flag
-        conn, channel = token
-        conn.process_one_packet(channel)
+        conn, channel, count = token
+        count.times{ conn.process_one_packet(channel) }
       end
     end
 
@@ -607,8 +615,9 @@ module ED2K
       @tcp_socket.bind(Socket.pack_sockaddr_in(@tcp_port, '0.0.0.0'))
       @tcp_socket.listen(MAX_SOCKET_QUEUE)
       true
-    rescue Errno::EADDRINUSE
-      log_error("Failed to start core: The TCP port #{@tcp_port} is already in use")
+    rescue SystemCallError => e
+      log_error("Failed to start core: #{bind_error(e, 'TCP', @tcp_port)}")
+      close_quietly(@tcp_socket)
       @tcp_socket = nil
       false
     end
@@ -620,10 +629,45 @@ module ED2K
       @udp_socket = Socket.new(:INET, :DGRAM)
       @udp_socket.bind(Socket.pack_sockaddr_in(@udp_port, '0.0.0.0'))
       true
-    rescue Errno::EADDRINUSE
-      log_error("Failed to start core: The UDP port #{@udp_port} is already in use")
+    rescue SystemCallError => e
+      log_error("Failed to start core: #{bind_error(e, 'UDP', @udp_port)}")
+      close_quietly(@udp_socket)
       @udp_socket = nil
       false
+    end
+
+    # Explain why binding a port failed, in terms of what can be done about it. Besides the port simply being taken, the
+    # case worth naming is one the system refuses outright: Windows reserves whole blocks of ports for Hyper-V and WinNAT
+    # (`netsh interface ipv4 show excludedportrange`), and binding one of those is denied rather than reported as busy.
+    # Those reservations are per protocol, so a port that binds fine for TCP may still be refused for UDP, and viceversa.
+    # @param error [SystemCallError] The error the bind failed with.
+    # @param protocol [String] The protocol being bound, for the message.
+    # @param port [Integer] The port we tried to bind.
+    # @return [String] A description of the failure.
+    def bind_error(error, protocol, port)
+      case error
+      when Errno::EADDRINUSE    then "The #{protocol} port #{port} is already in use"
+      when Errno::EACCES        then "The #{protocol} port #{port} was refused by the system, it may be reserved"
+      when Errno::EADDRNOTAVAIL then "The #{protocol} port #{port} is not available on this machine"
+      else "Could not bind the #{protocol} port #{port}: #{error.message}"
+      end
+    end
+
+    # Close a socket, ignoring any complaint about the state it's in. Used on paths whose whole purpose is to get rid of
+    # the socket, where a failure to close it tells us nothing we can act on.
+    # @param socket [Socket,nil] The socket to close, if there is one.
+    def close_quietly(socket)
+      socket&.close
+    rescue SystemCallError, IOError
+    end
+
+    # The port a socket is actually bound to, or `nil` if it isn't bound or is already closed.
+    # @param socket [Socket] The socket to inspect.
+    # @return [Integer,nil] The bound port, or `nil` if it can't be determined.
+    def socket_port(socket)
+      socket.local_address.ip_port
+    rescue SocketError, SystemCallError, IOError
+      nil
     end
 
     # Read and route all currently available UDP datagrams. Since datagrams are self-contained there's no reassembly: each

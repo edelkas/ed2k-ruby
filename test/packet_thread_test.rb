@@ -89,7 +89,7 @@ end
 
 section 'Both threads stop cleanly'
 core = ED2K::Core.new(log_level: ED2K::Core::LOG_LEVEL_NONE)
-core.config(udp_port: free_port)
+core.config(udp_port: free_port(udp: true))
 core.start(free_port)
 socket_thread = core.instance_variable_get(:@thSock)
 packet_thread = core.instance_variable_get(:@thPack)

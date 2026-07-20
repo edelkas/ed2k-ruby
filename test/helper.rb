@@ -52,9 +52,16 @@ end
 
 # Find a port that's currently free. There's an unavoidable race between releasing the probe socket
 # and the caller binding it, so this is a best effort rather than a reservation.
-# @return [Integer] A port number that was free a moment ago.
-def free_port
-  probe = TCPServer.new('127.0.0.1', 0)
+#
+# The probe has to use the same protocol the caller intends to bind, because the two aren't
+# interchangeable: on Windows, Hyper-V and WinNAT reserve whole blocks of ports per protocol (see
+# `netsh interface ipv4 show excludedportrange protocol=udp`), and binding one of those fails with
+# EACCES rather than EADDRINUSE. A TCP probe therefore happily returns a port that UDP may not have.
+# @param udp [Boolean] Whether the port is destined for a UDP socket rather than a TCP one.
+# @return [Integer] A port number that was free a moment ago for the requested protocol.
+def free_port(udp: false)
+  probe = udp ? UDPSocket.new : TCPServer.new('127.0.0.1', 0)
+  probe.bind('127.0.0.1', 0) if udp
   port = probe.addr[1]
   probe.close
   port
@@ -70,7 +77,7 @@ def with_core(log_level: ED2K::Core::LOG_LEVEL_NONE)
   core = ED2K::Core.new(log_level: log_level)
   logs = []
   core.add_logger{ |msg, level| logs << [level, msg] }
-  core.config(udp_port: free_port)
+  core.config(udp_port: free_port(udp: true))
   core.start(free_port)
   yield(core, logs)
 ensure
