@@ -84,24 +84,24 @@ module ED2K
     # @return [Boolean] Whether the core was started successfully or not.
     def start(port = DEFAULT_TCP_PORT)
       config(tcp_port: port)
-      return unless init_tcp_socket()
-      return unless init_udp_socket()
+      raise "Failed to initialize TCP socket" unless init_tcp_socket()
+      raise "Failed to initialize UDP socket" unless init_udp_socket()
       init_waker()
       start_socket_thread()
       start_packet_thread()
       log_info("Started core")
       true
     rescue => e
-      log_error("Unknown error starting core: #{e}")
-      @tcp_socket = nil
+      log_error("Error starting core: #{e}")
+      stop(true)
       false
     end
 
     # Stop monitoring connections and close sockets.
     # @return [Boolean] Whether the core was stopped succesfully.
-    # @todo Add an option to forcefully stop (kill) the core, or perhaps a different method
-    def stop
-      return false if !stop_socket_thread()
+    def stop(force = false)
+      return false if !stop_socket_thread() && !force
+      kill_socket_thread()
       if @tcp_socket
         log_info("Stopped TCP server on port #{socket_port(@tcp_socket) || @tcp_port}")
         close_quietly(@tcp_socket)
@@ -117,7 +117,8 @@ module ED2K
         @udp_socket = nil
       end
       @connections.each{ |fileno, conn| disconnect(conn) }
-      return false if !stop_packet_thread()
+      return false if !stop_packet_thread() && !force
+      kill_packet_thread()
       log_info("Stopped core")
       true
     end
