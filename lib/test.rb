@@ -52,40 +52,6 @@ module Stats
   end
 end
 
-class RC4
-  def initialize(key)
-    @q1, @q2 = 0, 0
-    @state = (0...256).to_a
-    key_length = key.length
-    while @q1 < 256
-      @q2 = (@q2 + @state[@q1] + key.getbyte(@q1 % key_length)) % 256
-      @state[@q1], @state[@q2] = @state[@q2], @state[@q1]
-      @q1 += 1
-    end
-    @q1, @q2 = 0, 0
-  end
-
-  def encrypt!(text)
-    text.force_encoding(Encoding::BINARY)
-    index = 0
-    while index < text.bytesize
-      @q1 = (@q1 + 1) % 256
-      @q2 = (@q2 + @state[@q1]) % 256
-      @state[@q1], @state[@q2] = @state[@q2], @state[@q1]
-      text.setbyte(index, text.getbyte(index) ^ @state[(@state[@q1] + @state[@q2]) % 256])
-      index += 1
-    end
-    text
-  end
-
-  def encrypt(text)
-    encrypt!(text.dup)
-  end
-
-  alias_method :decrypt!, :encrypt!
-  alias_method :decrypt, :encrypt
-end
-
 class Ed2kUDPSocket
   include Stats
   include Logger
@@ -194,7 +160,7 @@ class Server
     was_encrypted = false
     if key() && (@obfuscate_udp || packet[0].ord != OP_EDONKEYPROT)
       log("Received unexpected encrypted UDP packet, decrypting anyway") if !@obfuscate_udp
-      case status = decrypt!(packet)
+      case status = Obfuscation::decrypt!(packet, key: key())
       when nil
         log("Failed to decrypt UDP packet of size #{packet.size}, discarding")
         return
@@ -247,7 +213,7 @@ class Server
     @challenge_stats = crypt ? rand(1 << 32) : MIN_STATUS_CHALLENGE + rand(1 << 16)
     packet = [OP_EDONKEYPROT, OP_GLOBSERVSTATREQ, @challenge_stats].pack('CCL<')
     packet << rand(16).times.map{ rand(256) }.pack('C*') if crypt
-    obf = encrypt!(packet) if obf
+    obf = Obfuscation::encrypt!(packet, key: key()) if obf
     send_udp(packet, obf: obf || crypt)
     log("Sent UDP status request with challenge %#2x" % [@challenge_stats])
   end
@@ -275,45 +241,8 @@ class Server
     add_sent(packet.size)
   end
 
-  def key
+  def udp_key
     @key_pending && @challenge_stats || @udp_key
-  end
-
-  def build_key(random, incoming)
-    return unless key = key()
-    magic = incoming ? 0xA5 : 0x6B
-    seed = [key, magic, random].pack('L<CS<')
-    Digest::MD5.digest(seed)
-  end
-
-  def encrypt!(packet)
-    return false unless key()
-    random = rand(1 << 16)
-    key = build_key(random, false)
-    rc4 = RC4.new(key)
-    protocol = OP_EDONKEYPROT
-    protocol = rand(256) while protocol == OP_EDONKEYPROT
-    packet.prepend([0x13EF24D5, 0].pack('L<C'))
-    rc4.encrypt!(packet)
-    packet.prepend([protocol, random].pack('CS<'))
-    true
-  end
-
-  # Returns 'false' if it didn't decrypt, 'true' if it did, and 'nil' if it failed
-  def decrypt!(packet)
-    return false if packet.size < 8 || !key() # crypt header doesn't fit
-    protocol, random = packet.unpack('CS<')
-    return false if protocol == OP_EDONKEYPROT # unencrypted
-    key = build_key(random, true)
-    rc4 = RC4.new(key)
-    packet.slice!(0, 3)
-    rc4.decrypt!(packet)
-    magic, pad_len = packet.unpack('L<C')
-    return if magic != 0x13EF24D5 # invalid magic number
-    pad_len &= 0xF
-    return if packet.size <= 5 + pad_len # padding doesn't fit
-    packet.slice!(0, 5 + pad_len)
-    true
   end
 
   def parse_stats(data)

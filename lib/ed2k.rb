@@ -145,7 +145,7 @@ module ED2K
 
 
   MAX_EMULE_FILE_SIZE     = 256 * 1024 ** 3 # Supported file size limit (256GB)
-  OLD_MAX_EMULE_FILE_SIZE = 4290048000	    # Old file size limit, before 64bit support (~4GB) (((2^32-1)/PARTSIZE)*PARTSIZE = 441 parts)
+  OLD_MAX_EMULE_FILE_SIZE = 4290048000	    # Old file size limit, before 64bit support (~4GB) (((2^32-1)/{PARTSIZE})*{PARTSIZE} = 441 parts)
   PARTSIZE                = 9500 * 1024     # Parts are the primary file subdivision (~9.28MB). Clients can only share completed parts.
   EMBLOCKSIZE             = 180 * 1024      # Blocks are the secondary file subdivision (180KB). Clients usually request these blocks to other clients.
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
@@ -158,7 +158,7 @@ module ED2K
 
   CT_NAME          = 0x01 # Nickname
   CT_PORT          = 0x0f # TCP port we're listening to
-  CT_VERSION       = 0x11 # eDonkey version (always EDONKEYVERSION = 0x3C)
+  CT_VERSION       = 0x11 # eDonkey version (always {EDONKEYVERSION} = 0x3C)
   CT_SERVER_FLAGS  = 0x20 # Bitfield for some capabilities we support
   CT_EMULE_VERSION = 0xfb # eMule version (major, minor and update packed) (eserver 17.3)
 
@@ -168,7 +168,7 @@ module ED2K
   # opposed to the usual predictable structure, but it doesn't provide real privacy, just a layer against simple network filters.
 
 
-  SRVCAP_ZLIB         = 0x0001 # Support compressed packets via OP_PACKEDPROT protocol (eserver 16.40 / eMule0.30b)
+  SRVCAP_ZLIB         = 0x0001 # Support compressed packets via {OP_PACKEDPROT} protocol (eserver 16.40 / eMule0.30b)
   SRVCAP_IP_IN_LOGIN  = 0x0002 # We send our own IP during login (unused)
   SRVCAP_AUXPORT      = 0x0004 # Additional ports for the _server_ to listen to (unused) (eserver 16.45 / eMule0.42e)
   SRVCAP_NEWTAGS      = 0x0008 # Support for Lugdunum new-style tags (see {Tag.write}) (eserver 16.46 / eMule0.42f)
@@ -183,7 +183,7 @@ module ED2K
   # above server capabilities, although a slightly different subset of them.
 
 
-  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via OP_PACKEDPROT protocol (eserver 16.40 / eMule0.30b)
+  SRV_TCPFLG_COMPRESSION    = 0x0001 # Supports compressed packets via {OP_PACKEDPROT} protocol (eserver 16.40 / eMule0.30b)
   SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Tag.write}) (eserver 16.46 / eMule0.42f)
   SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
   SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files (eserver 17.5 / eMule0.46b)
