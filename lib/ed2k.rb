@@ -266,7 +266,7 @@ if ED2K::DEBUG
 end
 
 require_relative 'tags.rb'
-require_relative 'bucket.rb'
+require_relative 'throttling.rb'
 require_relative 'core.rb'
 require_relative 'connection.rb'
 require_relative 'server.rb'
