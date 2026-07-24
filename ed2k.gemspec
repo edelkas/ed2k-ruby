@@ -13,7 +13,7 @@ Gem::Specification.new do |s|
     Net::HTTP as opposed to an actual HTTP server library.
   EOT
   s.authors     = ['edelkas']
-  s.files       = Dir['lib/**/*', 'README.md', 'CHANGELOG.md', 'TODO.md', 'docs/**/*', '.yardopts']
+  s.files       = Dir['lib/**/*.rb', 'ext/**/*.{c,h,rb}', 'README.md', 'CHANGELOG.md', 'TODO.md', 'docs/**/*', '.yardopts']
   s.homepage    = 'https://github.com/edelkas/ed2k-ruby'
   s.metadata = {
     "homepage_uri"      => 'https://github.com/edelkas/ed2k-ruby',

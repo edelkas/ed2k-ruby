@@ -272,5 +272,7 @@ require_relative 'connection.rb'
 require_relative 'server.rb'
 require_relative 'client.rb'
 require_relative 'hash.rb'
+require_relative 'obfuscation.rb'
 
-#require_relative 'ced2k'
+# The native extension hooks its functions onto the modules and classes above, so it must be loaded last
+require_relative 'ced2k'

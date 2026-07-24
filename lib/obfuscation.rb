@@ -63,19 +63,31 @@ module ED2K
     # @note An RC4 encoder / decoder object **preserves its state** between runs, so each successive run isn't identical.
     #       This is the usual stream-oriented implementation. Thus, in order to decrypt a previously encrypted stream,
     #       a separate RC4 object with the same key must be created.
-    # @todo Add a C++-based version in our native extension for performance, compare both and ensure they match,
-    #       benchmark them, and finally let the user choose which version they'd want, defaulting to the native one.
+    # Two interchangeable implementations are available, selected per object at construction (see {initialize}): the
+    # pure Ruby one below, and a native C one from the extension. Both keep their whole state in the same three
+    # variables and in the same format, so they produce identical output and can even be swapped mid-stream.
     class RC4
+
+      INITIAL_STATE = (0...256).to_a.pack('C*')
+
+      # @return [Boolean] Whether this object ciphers using the native implementation.
+      attr_reader :native
 
       # @param key [String] An arbitrary binary string to use as key. Can be between 1 and 256 bytes, usually between
       #                     5 and 16, corresponding to key lengths between 40 and 128 bits (the latter for eMule).
-      def initialize(key)
+      # @param native [Boolean] Whether to use the C implementation from the native extension, which is considerably
+      #                         faster, or the pure Ruby one. Mainly useful for comparing and benchmarking both.
+      def initialize(key, native: true)
+        @native = native
+        return rc4_init_native(key) if native
         @i, @j = -1, 0
-        @S = (0...256).to_a
-        key_length = key.length
+        @S = INITIAL_STATE.dup
+        key_length = key.bytesize
         while (@i += 1) < 256
-          @j = (@j + @S[@i] + key.getbyte(@i % key_length)) % 256
-          @S[@i], @S[@j] = @S[@j], @S[@i]
+          @j = (@j + @S.getbyte(@i) + key.getbyte(@i % key_length)) % 256
+          si, sj = @S.getbyte(@i), @S.getbyte(@j)
+          @S.setbyte(@i, sj)
+          @S.setbyte(@j, si)
         end
         @i, @j = 0, 0
       end
@@ -84,13 +96,16 @@ module ED2K
       # @param buffer [String] The data to encrypt.
       # @return [String] The encrypted data, same length as `buffer`.
       def encrypt!(buffer)
+        return rc4_crypt_native(buffer) if @native
         buffer.force_encoding(Encoding::BINARY)
         n = -1
         while (n += 1) < buffer.bytesize
           @i = (@i + 1) % 256
-          @j = (@j + @S[@i]) % 256
-          @S[@i], @S[@j] = @S[@j], @S[@i]
-          buffer.setbyte(n, buffer.getbyte(n) ^ @S[(@S[@i] + @S[@j]) % 256])
+          @j = (@j + @S.getbyte(@i)) % 256
+          si, sj = @S.getbyte(@i), @S.getbyte(@j)
+          @S.setbyte(@i, sj)
+          @S.setbyte(@j, si)
+          buffer.setbyte(n, buffer.getbyte(n) ^ @S.getbyte((si + sj) % 256))
         end
         buffer
       end

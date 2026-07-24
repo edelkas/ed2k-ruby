@@ -5,7 +5,7 @@ module ED2K
   # [AICH](https://www.emule-project.com/home/perl/help.cgi?l=1&rm=show_topic&topic_id=589) (Advanced Intelligent Corruption
   # Handling) provides better granularity by SHA1-hashing the 180KB blocks of one part to recover from corruption.
   # Users are also identified by hashes themselves.
-  module Hash
+  module Hashing extend self
 
     # Computes the **ed2k hash** of a file, which uniquely identifies the file in the ed2k network. This hash only depends
     # on the contents of the file, not the name nor the metadata. More specifically, the MD4 hash of each 9500KB part is
