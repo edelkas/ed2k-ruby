@@ -1,6 +1,7 @@
 /.yardoc
 /doc
 /ext/Makefile
+/ext/.clangd
 .byebug*
 *.gem
 *.lock
