@@ -167,9 +167,9 @@ module ED2K
         @core.log_debug("Received corrupt server list packet from #{format_name()}")
         return
       end
-      servers = packet.unpack('L<S<' * count).each_slice(2).to_a
+      servers = packet.unpack('L<S<' * count, offset: 1).each_slice(2).to_a
       @core.log_info("Received #{count} servers from #{format_name()}")
-      servers.each{ |srv| @core.log_debug("%15s:%d" % srv) }
+      servers.each{ |ip, port| @core.log_debug("%15s:%d" % [ED2K::unpack_ip(ip), port]) }
       ServerListStruct.new(servers)
     end
 
