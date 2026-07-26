@@ -283,9 +283,8 @@ module ED2K
 
     # Add a handler for the server reject packet. It contains no payload and is sent when the server has rejected our
     # last command, usually due to malformed parameters, incorrect protocol being used, or something similar.
-    # @see Server#parse_reject
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [String] This will be empty, but is left here for compatibility.
+    # @yieldparam payload [Packet::Reject] This will be empty, but is left here for compatibility.
     # @return [Proc] The resulting handler
     def handle_reject(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_REJECT] = handler
@@ -293,10 +292,9 @@ module ED2K
 
     # Add a handler for the server list packet. It contains a server's list of other known servers as (IP, Port) pairs.
     # This packet is only sent as a response to {Server#send_server_list_request}.
-    # @see Server#parse_server_list
     # @see Server#send_server_list_request
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Server::ServerListStruct] Contains the list of servers' IP and port pairs.
+    # @yieldparam payload [Packet::ServerList] Contains the list of servers' IP and port pairs.
     # @return [Proc] The resulting handler
     def handle_server_list(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERLIST] = handler
@@ -304,9 +302,8 @@ module ED2K
 
     # Add a handler for the server status packet. It contains the server's current user and file count, and is usually
     # received right after logging in.
-    # @see Server#parse_server_status
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Server::ServerStatusStruct] Contains the server's user and file count.
+    # @yieldparam payload [Packet::ServerStatus] Contains the server's user and file count.
     # @return [Proc] The resulting handler
     def handle_server_status(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERSTATUS] = handler
@@ -321,9 +318,8 @@ module ED2K
     # - `server version xx.xx` -> The version of eserver running, nowadays usually 17.15.
     # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use DNS because their IP is dynamic and thus subject to change
     #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
-    # @see Server#parse_server_message
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Server::ServerMessageStruct] Contains the list of messages.
+    # @yieldparam payload [Packet::ServerMessage] Contains the list of messages.
     # @return [Proc] The resulting handler
     def handle_server_message(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
@@ -333,9 +329,8 @@ module ED2K
     # Received whenever our session ID changes in the server. This usually only happens when we log into the server, and
     # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
     # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
-    # @see Server#parse_id_change
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Server::IdChangeStruct] Contains our new ID, server flags, etc.
+    # @yieldparam payload [Packet::IdChange] Contains our new ID, server flags, public IP, etc.
     # @return [Proc] The resulting handler
     def handle_id_change(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
@@ -344,9 +339,8 @@ module ED2K
     # Add a handler for the server identification packet. It contains the hash (a sort of GUID to identify the server),
     # the IP address and port to connect to it, and its name and short description. This packet is sent as a response to
     # {Server#send_server_list_request}.
-    # @see Server#parse_server_identification
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Server::ServerIdentificationStruct] Contains the server's hash, IP, port, name and description.
+    # @yieldparam payload [Packet::ServerIdentification] Contains the server's hash, IP, port, name and description.
     # @return [Proc] The resulting handler
     def handle_server_identification(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERIDENT] = handler

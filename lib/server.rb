@@ -41,24 +41,6 @@ module ED2K
   class Server
     include Connection
 
-    # The processed payload of an {OP_SERVERLIST} packet (see {Core#handle_server_list} and {#parse_server_list}).
-    ServerListStruct = Struct.new(:servers)
-
-    # The processed payload of an {OP_SERVERSTATUS} packet (see {Core#handle_server_status} and {#parse_server_status}).
-    ServerStatusStruct = Struct.new(:users, :files)
-
-    # The processed payload of an {OP_SERVERMESSAGE} packet (see {Core#handle_server_message} and {#parse_server_message}).
-    ServerMessageStruct = Struct.new(:messages)
-
-    # The processed payload of an {OP_IDCHANGE} packet (see {Core#handle_id_change} and {#parse_id_change}).
-    # Note that the IP and ports are optional and might be `nil`. The capability flags (`support_...`) should always
-    # be there for "modern" (16.44+) servers.
-    IdChangeStruct = Struct.new(:server, :id, :ip, :port, :obfuscated_port, :support_compression, :support_newtags,
-      :support_unicode, :support_related, :support_filetypes, :support_largefiles, :support_obfuscation)
-
-    # The processed payload of an {OP_SERVERIDENT} packet (see {Core#handle_server_identification} and {#parse_server_identification})
-    ServerIdentificationStruct = Struct.new(:hash, :ip, :port, :name, :description)
-
     TIMEOUT_LOGIN = 30 # Maximum time in seconds to wait for a server's answer to our login request
 
     # @param ip [String] The public IPv4 address of the server
@@ -91,162 +73,6 @@ module ED2K
 
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
       udp_setup()
-    end
-
-    # Whether we've sent a login request to this server and haven't received an answer yet. Servers reply to a login by
-    # opening a TCP connection back to us, to check whether we're reachable and thus deserve a High ID, and that's
-    # essentially the only reason they ever connect to us. This makes the flag a useful hint to tell apart several
-    # servers sharing a single IP address when one of them connects to us (see {Core#get_server}).
-    #
-    # An answer may simply never arrive, so the flag expires on its own after {TIMEOUT_LOGIN} seconds rather than
-    # lingering forever and skewing every later disambiguation towards this server. It's checked here, when read, so
-    # that no timer or periodic sweep is needed.
-    # @return [Boolean]
-    def pending_login
-      return false if !@pending_login
-      return true if Time.now - @login_time <= TIMEOUT_LOGIN
-      @pending_login = false
-      @core.log_debug("Login request to #{format_name()} went unanswered for #{TIMEOUT_LOGIN}s, no longer expecting a reply")
-      false
-    end
-
-    # Mark whether we're awaiting an answer to our login request, starting the countdown to {TIMEOUT_LOGIN} when we are.
-    # @param pending [Boolean] Whether the answer is now pending.
-    def pending_login=(pending)
-      @pending_login = pending
-      @login_time = pending ? Time.now : nil
-    end
-
-    # Format the server's name in human-readable form
-    # @return [String] Nick (IP:Port)
-    def format_name
-      ip = "%s:%d" % [@tcp_address.ip_address, @tcp_address.ip_port]
-      !@name.empty? ? "#{@name} (#{ip})" : ip
-    end
-
-    # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
-    # that the custom handlers can consume it.
-    # @param opcode [Integer] The packet's identifying opcode.
-    # @param packet [String] The packet's payload, without the header.
-    # @return Packet-specific processed payload, or `nil` if processing failed.
-    def parse_edonkey_tcp_packet(opcode, packet)
-      case opcode
-      when OP_REJECT
-        parse_reject()
-      when OP_SERVERLIST
-        parse_server_list(packet)
-      when OP_SERVERSTATUS
-        parse_server_status(packet)
-      when OP_SERVERMESSAGE
-        parse_server_message(packet)
-      when OP_IDCHANGE
-        parse_id_change(packet)
-      when OP_SERVERIDENT
-        parse_server_identification(packet)
-      else
-        @core.log_debug{ "Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode }
-        nil
-      end
-    end
-
-    # Received when our last command was rejected by the server. There's no payload.
-    # @see Core#handle_reject
-    def parse_reject()
-      self.pending_login = false # The rejection may well be for our login request, don't wait for an answer any longer
-      @core.log_debug("Last command was rejected by server #{format_name()}")
-      ''
-    end
-
-    # Contains the server's list of other known servers. Received after being requested by the client via {#send_server_list_request}.
-    # @see Core#handle_server_list
-    # @param packet [String] The raw payload.
-    # @return [ServerListStruct] The processed payload.
-    def parse_server_list(packet)
-      count = packet.unpack1('C')
-      if packet.size < 1 + 6 * count
-        @core.log_debug("Received corrupt server list packet from #{format_name()}")
-        return
-      end
-      servers = packet.unpack('L<S<' * count, offset: 1).each_slice(2).to_a
-      @core.log_info("Received #{count} servers from #{format_name()}")
-      servers.each{ |ip, port| @core.log_debug("%15s:%d" % [ED2K::unpack_ip(ip), port]) }
-      ServerListStruct.new(servers)
-    end
-
-    # Contains the server's current user and file count. Received after logging in, typically.
-    # @see Core#handle_server_status
-    # @param packet [String] The raw payload.
-    # @return [ServerStatusStruct] The processed payload.
-    def parse_server_status(packet)
-      if packet.size < 8
-        @core.log_debug("Received corrupt server status from #{format_name()}")
-        return
-      end
-      users, files = packet.unpack('L<2')
-      @core.log_debug("Received server status from #{format_name()}: #{users} users, #{files} files")
-      ServerStatusStruct.new(users, files)
-    end
-
-    # Received when the server sends us messages. A packet can contain multiple messages separated by new lines.
-    # @see Core#handle_server_message
-    # @param packet [String] The raw payload.
-    # @return [ServerMessageStruct] The processed payload.
-    def parse_server_message(packet)
-      if packet.size < 2
-        @core.log_debug("Received corrupt server message from #{format_name()}")
-        return
-      end
-      length, messages = packet.unpack('S<A*')
-      messages = messages.split("\r\n").map(&:strip).each{ |msg|
-        @core.log_info("Received server message from #{format_name()}: #{msg}")
-      }
-      ServerMessageStruct.new(messages)
-    end
-
-    # Received whenever our session ID changes in the server.
-    # @see Core#handle_id_change
-    # @param packet [String] The raw payload.
-    # @return [IdChangeStruct] The processed payload.
-    def parse_id_change(packet)
-      if packet.size < 4
-        @core.log_debug("Received corrupt ID change packet from #{format_name()}")
-        return
-      end
-      id, flags, port, ip, obfuscated_port = packet.unpack('L<5')
-      flags ||= 0
-      self.pending_login = false # The ID assignment is the answer to our login request
-      @core.log_info("Received new ID from #{format_name()}: #{id}")
-      @core.log_debug("Our IP is #{ED2K::unpack_ip(ip)}") if ip
-      IdChangeStruct.new(
-        self, id, ip, port, obfuscated_port,
-        flags & SRV_TCPFLG_COMPRESSION    > 0,
-        flags & SRV_TCPFLG_NEWTAGS        > 0,
-        flags & SRV_TCPFLG_UNICODE        > 0,
-        flags & SRV_TCPFLG_RELATEDSEARCH  > 0,
-        flags & SRV_TCPFLG_TYPETAGINTEGER > 0,
-        flags & SRV_TCPFLG_LARGEFILES     > 0,
-        flags & SRV_TCPFLG_TCPOBFUSCATION > 0
-      )
-    end
-
-    # Contains server information, such as name and description.
-    # @see Core#handle_server_identification
-    # @param packet [String] The raw payload.
-    # @return [ServerIdentificationStruct] The processed payload.
-    def parse_server_identification(packet)
-      if packet.size < 16 + 4 + 2 + 4
-        @core.log_debug("Received corrupt server identification packet from #{format_name()}")
-        return
-      end
-      hash, ip, port = packet.unpack('a16L<S<')
-      tags = Tag::read(packet[22..-1], core: @core)
-      if !tags
-        @core.log_debug("Failed to parse tags in server identification packet from #{format_name()}")
-        name, description = nil, nil
-      else
-        name, description = tags[ST_SERVERNAME], tags[ST_DESCRIPTION]
-      end
-      ServerIdentificationStruct.new(hash, ip, port, name, description)
     end
 
     # Send login request to the server. We communicate basic information about ourselves, as well as client capabilities
@@ -316,6 +142,154 @@ module ED2K
     def send_server_list_request
       queue_tcp_packet(OP_EDONKEYPROT, OP_GETSERVERLIST)
       @core.log_debug("Sent server list request to #{format_name()}")
+    end
+
+    # Whether we've sent a login request to this server and haven't received an answer yet. Servers reply to a login by
+    # opening a TCP connection back to us, to check whether we're reachable and thus deserve a High ID, and that's
+    # essentially the only reason they ever connect to us. This makes the flag a useful hint to tell apart several
+    # servers sharing a single IP address when one of them connects to us (see {Core#get_server}).
+    #
+    # An answer may simply never arrive, so the flag expires on its own after {TIMEOUT_LOGIN} seconds rather than
+    # lingering forever and skewing every later disambiguation towards this server. It's checked here, when read, so
+    # that no timer or periodic sweep is needed.
+    # @return [Boolean]
+    def pending_login
+      return false if !@pending_login
+      return true if Time.now - @login_time <= TIMEOUT_LOGIN
+      @pending_login = false
+      @core.log_debug("Login request to #{format_name()} went unanswered for #{TIMEOUT_LOGIN}s, no longer expecting a reply")
+      false
+    end
+
+    # Format the server's name in human-readable form.
+    # @return [String] Nick (IP:Port)
+    def format_name
+      ip = "%s:%d" % [@tcp_address.ip_address, @tcp_address.ip_port]
+      !@name.empty? ? "#{@name} (#{ip})" : ip
+    end
+
+    private
+
+    # Mark whether we're awaiting an answer to our login request, starting the countdown to {TIMEOUT_LOGIN} when we are.
+    def pending_login=(pending)
+      @pending_login = pending
+      @login_time = pending ? Time.now : nil
+    end
+
+    # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
+    # that the custom handlers can consume it.
+    def parse_edonkey_tcp_packet(opcode, packet)
+      case opcode
+      when OP_REJECT
+        parse_reject()
+      when OP_SERVERLIST
+        parse_server_list(packet)
+      when OP_SERVERSTATUS
+        parse_server_status(packet)
+      when OP_SERVERMESSAGE
+        parse_server_message(packet)
+      when OP_IDCHANGE
+        parse_id_change(packet)
+      when OP_SERVERIDENT
+        parse_server_identification(packet)
+      else
+        @core.log_debug{ "Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode }
+        nil
+      end
+    end
+
+    # Received when our last command was rejected by the server. There's no payload.
+    def parse_reject()
+      self.pending_login = false # The rejection may well be for our login request, don't wait for an answer any longer
+      @core.log_debug("Last command was rejected by server #{format_name()}")
+      Packet::Reject.new
+    end
+
+    # Contains the server's list of other known servers. Requested by the client via {#send_server_list_request}.
+    def parse_server_list(packet)
+      count = packet.unpack1('C')
+      if packet.size < 1 + 6 * count
+        @core.log_debug("Received corrupt server list packet from #{format_name()}")
+        return
+      end
+      servers = packet.unpack('L<S<' * count, offset: 1).each_slice(2).to_a
+      @core.log_info("Received #{count} servers from #{format_name()}")
+      servers.each{ |ip, port| @core.log_debug("%15s:%d" % [ED2K::unpack_ip(ip), port]) }
+      Packet::ServerList.new(servers)
+    end
+
+    # Contains the server's current user and file count. Received after logging in, typically.
+    def parse_server_status(packet)
+      if packet.size < 8
+        @core.log_debug("Received corrupt server status from #{format_name()}")
+        return
+      end
+      users, files = packet.unpack('L<2')
+      @core.log_debug("Received server status from #{format_name()}: #{users} users, #{files} files")
+      Packet::ServerStatus.new(users, files)
+    end
+
+    # Received when the server sends us messages. A packet can contain multiple messages separated by new lines.
+    def parse_server_message(packet)
+      if packet.size < 2
+        @core.log_debug("Received corrupt server message from #{format_name()}")
+        return
+      end
+      length = packet.unpack1('S<')
+      messages = packet.unpack1("a#{length}")
+      messages = messages.each_line{ |msg|
+        if msg.start_with?(/error/i)
+          @core.log_error("Received error from #{format_name()}: #{msg}")
+        elsif msg.start_with?(/warning/i)
+          @core.log_warning("Received warning from #{format_name()}: #{msg}")
+        elsif msg =~ /\[emDynIP: (.+)\]/i
+          @core.log_notice("Received DNS from #{format_name()}: #{$1}")
+        else
+          @core.log_info("Received server message from #{format_name()}: #{msg}")
+        end
+      }
+      Packet::ServerMessage.new(messages)
+    end
+
+    # Received whenever our session ID changes in the server.
+    def parse_id_change(packet)
+      if packet.size < 4
+        @core.log_debug("Received corrupt ID change packet from #{format_name()}")
+        return
+      end
+      id, flags, _, ip, obfuscated_tcp_port = packet.unpack('L<5')
+      flags ||= 0
+      self.pending_login = false # The ID assignment is the answer to our login request
+      @core.log_info("Received new ID from #{format_name()}: #{id}")
+      @core.log_debug("Our IP is #{ED2K::unpack_ip(ip)}") if ip
+      Packet::IdChange.new(
+        id, ip, obfuscated_tcp_port,
+        support_compression:  flags & SRV_TCPFLG_COMPRESSION    > 0,
+        support_newtags:      flags & SRV_TCPFLG_NEWTAGS        > 0,
+        support_unicode:      flags & SRV_TCPFLG_UNICODE        > 0,
+        support_related:      flags & SRV_TCPFLG_RELATEDSEARCH  > 0,
+        support_filetypes:    flags & SRV_TCPFLG_TYPETAGINTEGER > 0,
+        support_largefiles:   flags & SRV_TCPFLG_LARGEFILES     > 0,
+        supports_obfuscation: flags & SRV_TCPFLG_TCPOBFUSCATION > 0
+      )
+    end
+
+    # Contains server information, such as name and description. Received after requesting the server list.
+    def parse_server_identification(packet)
+      if packet.size < 16 + 4 + 2 + 4
+        @core.log_debug("Received corrupt server identification packet from #{format_name()}")
+        return
+      end
+      hash, ip, port = packet.unpack('a16L<S<')
+      tags = Tag::read(packet[22..-1], core: @core)
+      if !tags
+        @core.log_debug("Failed to parse tags in server identification packet from #{format_name()}")
+        name, description = nil, nil
+      else
+        name, description = tags[ST_SERVERNAME], tags[ST_DESCRIPTION]
+        tags.reject!{ |k, v| k == ST_SERVERNAME || k == ST_DESCRIPTION }
+      end
+      Packet::ServerIdentification.new(hash, ip, port, name, description, tags || {})
     end
 
   end # Server
