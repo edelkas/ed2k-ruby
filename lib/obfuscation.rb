@@ -1,9 +1,12 @@
 module ED2K
 
-  # Implements eMule's **protocol obfuscation**. This feature was introduced in late 2006 in eMule 0.47b and supported
-  # by eserver 17.8 onwards. It's purpose is to mask eMule's traffic, originally to prevent being recognized and throttled
-  # / blocked by ISPs or network admins, because the raw protocol has a very predictable structure. Nowadays it's probably
-  # pointless, but necessary to maintain backwards compatibility, as official clients use it by default.
+  # Implements eMule's **protocol obfuscation**. You typically won't need to do this manually, it'll be handled
+  # automatically by the gem whenever specified and supported by both peers.
+  #
+  # This feature was introduced in late 2006 in eMule 0.47b and supported by eserver 17.8 onwards. It's purpose is to mask
+  # eMule's traffic, originally to prevent being recognized and throttled / blocked by ISPs or network admins, because the
+  # raw protocol has a very predictable structure. Nowadays it's probably pointless, but necessary to maintain backwards
+  # compatibility, as official clients use it by default.
   #
   # Protocol obfuscation works by ciphering traffic between peers using a symmetric key based RC4 scheme. The keys are
   # negotiated during a handskake (for TCP traffic) or inferred from packet headers (for UDP traffic). All protocols
@@ -60,12 +63,14 @@ module ED2K
     # Since RC4 is XOR-based, it's an _involution_, i.e. an encrypted string is decrypted by running the same algorithm
     # with the same key on the output. In other words, {encrypt} and {decrypt} are aliases, and so are {encrypt!} and
     # {decrypt!}.
-    # @note An RC4 encoder / decoder object **preserves its state** between runs, so each successive run isn't identical.
-    #       This is the usual stream-oriented implementation. Thus, in order to decrypt a previously encrypted stream,
-    #       a separate RC4 object with the same key must be created.
+    #
     # Two interchangeable implementations are available, selected per object at construction (see {initialize}): the
     # pure Ruby one below, and a native C one from the extension. Both keep their whole state in the same three
     # variables and in the same format, so they produce identical output and can even be swapped mid-stream.
+    #
+    # @note An RC4 encoder / decoder object **preserves its state** between runs, so each successive run isn't identical.
+    #       This is the usual stream-oriented implementation. Thus, in order to decrypt a previously encrypted stream,
+    #       a separate RC4 object with the same key must be created.
     class RC4
 
       INITIAL_STATE = (0...256).to_a.pack('C*')

@@ -235,14 +235,14 @@ module ED2K
   # @param ip [String] The IP address in its usual representation.
   # @return [Integer] The packed IP
   def self.pack_ip(ip)
-    ip.split('.').map(&:to_i).pack('C4').unpack1('L>')
+    ip.split('.').map(&:to_i).pack('C4').unpack1('L<')
   end
 
   # Format an IPv4 address into human-readable form.
   # @param ip [Integer] The IP as received from the network
   # @return [String] The formatted IP
   def self.unpack_ip(ip)
-    [ip].pack('L>').unpack('C4').map(&:to_s).join('.')
+    [ip].pack('L<').unpack('C4').map(&:to_s).join('.')
   end
 
   # Helper to serialize raw binary data for logging purposes

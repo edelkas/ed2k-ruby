@@ -38,6 +38,10 @@ module ED2K
   # at least 1M. The **Soft File Limit** is the amount of files that will be indexed without consequences, while the
   # **Hard File Limit** is the amount that will get a client disconnected if surpassed. It doesn't make sense to share
   # more files than the soft limit, so a {Server} object will always remain within that boundary.
+  #
+  # @todo We need to ensure we're connected to the servers before sending the TCP packets!
+  #       Even for the UDP packets, we'll first need to ensure the server is known by the core (in @servers).
+  #       A good way of doing so is by doing all this from the core, and making the methods here private.
   class Server
     include Connection
 
@@ -53,10 +57,13 @@ module ED2K
       @ip          = ip
       @tcp_port    = port
       @tcp_address = Addrinfo.new(Socket.pack_sockaddr_in(@tcp_port, @ip))
+      @dns         = nil
 
       # These properties aren't known until we query the server's status and description
       @name        = ''
       @description = ''
+      @hash        = ''
+      @version     = ''
       @ping        = -1
       @files       = -1
       @max_users   = -1
@@ -64,7 +71,7 @@ module ED2K
       @low_id      = -1
       @soft_limit  = -1
       @hard_limit  = -1
-      @version     = -1
+      @tcp_flags   = 0
       @obfuscation = false
 
       # Whether we're awaiting the server's answer to our login request, and since when (see {#pending_login})
@@ -224,9 +231,9 @@ module ED2K
         @core.log_debug("Received corrupt server status from #{format_name()}")
         return
       end
-      users, files = packet.unpack('L<2')
-      @core.log_debug("Received server status from #{format_name()}: #{users} users, #{files} files")
-      Packet::ServerStatus.new(users, files)
+      @users, @files = packet.unpack('L<2')
+      @core.log_debug("Received server status from #{format_name()}: #{@users} users, #{@files} files")
+      Packet::ServerStatus.new(@users, @files)
     end
 
     # Received when the server sends us messages. A packet can contain multiple messages separated by new lines.
@@ -236,16 +243,22 @@ module ED2K
         return
       end
       length = packet.unpack1('S<')
-      messages = packet.unpack1("a#{length}")
+      messages = packet.unpack1("a#{length}", offset: 2)
       messages = messages.each_line{ |msg|
         if msg.start_with?(/error/i)
           @core.log_error("Received error from #{format_name()}: #{msg}")
         elsif msg.start_with?(/warning/i)
           @core.log_warning("Received warning from #{format_name()}: #{msg}")
-        elsif msg =~ /\[emDynIP: (.+)\]/i
-          @core.log_notice("Received DNS from #{format_name()}: #{$1}")
         else
           @core.log_info("Received server message from #{format_name()}: #{msg}")
+        end
+        if msg.start_with?(/server version\s*(\d+).(\d+)/i)
+          @version = $1 + '.' + $2
+          @core.log_debug("Received new server version: #{@version}")
+        end
+        if msg =~ /\[emDynIP: (.+)\]/i
+          @dns = $1
+          @core.log_debug("Received DNS from #{format_name()}: #{@dns}")
         end
       }
       Packet::ServerMessage.new(messages)
@@ -258,20 +271,12 @@ module ED2K
         return
       end
       id, flags, _, ip, obfuscated_tcp_port = packet.unpack('L<5')
+      @tcp_flags = flags if flags
       flags ||= 0
       self.pending_login = false # The ID assignment is the answer to our login request
       @core.log_info("Received new ID from #{format_name()}: #{id}")
       @core.log_debug("Our IP is #{ED2K::unpack_ip(ip)}") if ip
-      Packet::IdChange.new(
-        id, ip, obfuscated_tcp_port,
-        support_compression:  flags & SRV_TCPFLG_COMPRESSION    > 0,
-        support_newtags:      flags & SRV_TCPFLG_NEWTAGS        > 0,
-        support_unicode:      flags & SRV_TCPFLG_UNICODE        > 0,
-        support_related:      flags & SRV_TCPFLG_RELATEDSEARCH  > 0,
-        support_filetypes:    flags & SRV_TCPFLG_TYPETAGINTEGER > 0,
-        support_largefiles:   flags & SRV_TCPFLG_LARGEFILES     > 0,
-        supports_obfuscation: flags & SRV_TCPFLG_TCPOBFUSCATION > 0
-      )
+      Packet::IdChange.new(id, flags, ip, obfuscated_tcp_port)
     end
 
     # Contains server information, such as name and description. Received after requesting the server list.
@@ -280,7 +285,7 @@ module ED2K
         @core.log_debug("Received corrupt server identification packet from #{format_name()}")
         return
       end
-      hash, ip, port = packet.unpack('a16L<S<')
+      @hash, ip, port = packet.unpack('a16L<S<')
       tags = Tag::read(packet[22..-1], core: @core)
       if !tags
         @core.log_debug("Failed to parse tags in server identification packet from #{format_name()}")
@@ -289,7 +294,13 @@ module ED2K
         name, description = tags[ST_SERVERNAME], tags[ST_DESCRIPTION]
         tags.reject!{ |k, v| k == ST_SERVERNAME || k == ST_DESCRIPTION }
       end
-      Packet::ServerIdentification.new(hash, ip, port, name, description, tags || {})
+      @name = name if name
+      @description = description if description
+      @core.log_debug(
+        "Received server identification packet from #{format_name()}: hash=#{@hash.unpack1('H*')}, "\
+        "ip=#{ED2K::unpack_ip(ip)}, port=#{port}, name=#{name}, description=#{description}, more tags=#{tags.size}"
+      )
+      Packet::ServerIdentification.new(@hash, ip, port, name, description, tags || {})
     end
 
   end # Server

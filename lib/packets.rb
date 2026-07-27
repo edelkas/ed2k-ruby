@@ -26,6 +26,7 @@ module ED2K
   # - If the _channel_ is different: TCP vs TDP.
   # - If the _protocol_ is different: the same opcode could be used with different meanings in each of the 5 protocols above.
   # - If the _direction_ is different: Server->Client vs Client->Server vs Client->Client.
+  #
   # So a parser must be selected carefully taking into account all of the above factors.
   #
   # The **size** field is the length of the packet in bytes _minus 5_ (i.e. excluding the protocol and size fields, but notably,
@@ -101,6 +102,7 @@ module ED2K
     # in different lines.
     # - Received whenever the server we're connected to wants to send us a message (on login, on error, etc).
     # - Set a handler for these packets with {Core#handle_server_message}.
+    #
     # Importantly, certain messages (lines) carry special meaning that should be handled with care:
     # - If the message starts with `ERROR` or `WARNING` the server is explicitly informing us of a problem. eMule logs
     #   these in red or purple, respectively.
@@ -109,6 +111,7 @@ module ED2K
     # - If the message contains a string of the form `[emDynIP: DNS_HERE]`, then the server is under a
     #   dynamic IP regime, and is informing us to use the specified DNS instead. The host name length is below 51 chars.
     #   See [eMule Project](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic) for more info.
+    #
     # These are parsed automatically by this class, but the raw message is left untouched.
     class ServerMessage < Packet
 
@@ -116,9 +119,21 @@ module ED2K
       # @return [String]
       attr_reader :message
 
+      # The eserver version indicated by this message, in the form `MAJOR.MINOR`, if present.
+      # @return [String,nil]
+      attr_reader :version
+
       # The server's host name that should be used instead of the IP address.
       # @return [String]
       attr_reader :dns
+
+      # Whether this message contains an error.
+      # @return [Boolean]
+      attr_reader :has_error
+
+      # Whether this message contains a warning.
+      # @return [Boolean]
+      attr_reader :has_warning
 
       # @param message [String] The raw message string sent by the server.
       def initialize(message)
@@ -129,25 +144,14 @@ module ED2K
         @dns = nil
         @message.each_line do |msg|
           if msg.start_with?(/error/i)
-            @error = true
+            @has_error = true
           elsif msg.start_with?(/warning/i)
-            @warning = true
-          elsif msg =~ /\[emDynIP: (.+)\]/i
-            @dns = $1
+            @has_warning = true
+          elsif msg.start_with?(/server version\s*(\d+).(\d+)/i)
+            @version = $1 + '.' + $2
           end
+          @dns = $1 if msg =~ /\[emDynIP: (.+)\]/i
         end
-      end
-
-      # Whether this server message included an error.
-      # @return [Boolean]
-      def error?
-        @error
-      end
-
-      # Whether this server message included a warning.
-      # @return [Boolean]
-      def warning?
-        @warning
       end
     end
 
@@ -155,12 +159,14 @@ module ED2K
     # capabilities. These properties will be stored and handled automatically by the gem whenever relevant.
     # - Received whenever our ID is set or changes, notably after login (via {Server#send_login}).
     # - Set a handler for these packets with {Core#handle_id_change}.
+    #
     # Note there are two types of IDs:
     # - **High ID**: If the ID is a full 4-byte integer it will always be our external IP address, and it means we are
     #   able to receive incoming TCP connections from the network. This is the ideal regime for optimal ed2k network usage.
     # - **Low ID**: If the ID is only 3 bytes (i.e. below ~16.7M) then it's a random value assigned by the server. This
     #   means we are unreachable in the ed2k network. In this situation we'll be able to communicate with fewer client,
     #   find fewer sources, etc.
+    #
     # A high ID user and a low ID user can only communicate if they're connected to the same server via the callback
     # mechanism. Two low ID users cannot communicate in any way. See {Server} for more info.
     class IdChange < Packet
@@ -168,6 +174,11 @@ module ED2K
       # The ID we've been assigned in the server. Will match our external IP if we have High ID.
       # @return [Integer]
       attr_reader :id
+
+      # The server's TCP flags, a bitmask containing supported capabilities.
+      # @see All All the "supports_*" methods.
+      # @return [Integer]
+      attr_reader :flags
 
       # Our external IP as reported by the server. Not always present. If it matches our ID then we have High ID.
       # @return [Integer]
@@ -177,74 +188,74 @@ module ED2K
       # @return [Integer]
       attr_reader :obf_tcp_port
 
-      # Whether this server supports sending and receiving compressed packets. It will be done automatically by this gem,
-      # unless otherwise specified, provided both server and client support it. This was introduced in eserver 16.40 /
-      # eMule0.30b via the packed protocol ({OP_PACKEDPROT}) to save bandwidth, and is typically used for search results
-      # or when we send our shared files list, only when both server and client support it.
-      # @return [Boolean]
-      attr_reader :support_compression
-
-      # Whether this server supports new-style tags. This is an internal feature that most users shouldn't concern themselves
-      # with, it will be used automatically by the gem whenever possible. It allows to compress tags in packets, and
-      # was introduced in eserver 16.46 / eMule0.42f. See {Tag} for the technical details.
-      # @return [Boolean]
-      attr_reader :support_newtags
-
-      # Whether this server supports Unicode strings (for file names, user names, etc). Introduced in eserver 17.1 /
-      # eMule0.44a.
-      # @return [Boolean]
-      attr_reader :support_unicode
-
-      # Whether this server supports searching for related files (the "Related" search in eMule). Introduced in
-      # eserver 17.5 / eMule0.46b.
-      # @return [Boolean]
-      attr_reader :support_related
-
-      # Whether this server supports searching for multiple file extensions. This enables the classic search by type
-      # (e.g. "Video") instead of only individual extensions (e.g. "mkv"). Introduced in eserver 17.7.
-      # @return [Boolean]
-      attr_reader :support_filetypes
-
-      # Whether this server supports 64-bit file sizes, and thus files over 4GB. Sizes are nonetheless limited to 256GB,
-      # at least on eMule's side. Introduced in eserver 17.8 / emule0.47a.
-      # @return [Boolean]
-      attr_reader :support_largefiles
-
-      # Whether this server supports obfuscated TCP packets. Protocol obfuscation was added in eserver 17.13 / eMule0.47b,
-      # see {Obfuscation} for more information.
-      # @return [Boolean]
-      attr_reader :support_obfuscation
-
       # @param id [Integer] Our ID in the server, see {#id}.
+      # @param flags [Integer] The server's TCP flags, see {#flags}.
       # @param ip [Integer] Optional, our external IP as reported by the server, see {#ip}.
       # @param obf_tcp_port [Integer] Optional, the server's TCP port for obfuscated communications, see {#obf_tcp_port}.
-      # @param support_compression [Boolean] Server supports compressed packets, see {#support_compression}.
-      # @param support_newtags [Boolean] Server supports new-style tags, see {#support_newtags}.
-      # @param support_unicode [Boolean] Server supports Unicode strings, see {#support_unicode}.
-      # @param support_related [Boolean] Server supports related search, see {#support_related}.
-      # @param support_filetypes [Boolean] Server supports search by file type, see {#support_filetypes}.
-      # @param support_largefiles [Boolean] Server supports files over 4GB, see {#support_largefiles}.
-      # @param support_obfuscation [Boolean] Server supports TCP protocol obfuscation, see {#support_obfuscation}.
-      def initialize(id, ip, obf_tcp_port, support_compression: false, support_newtags: false, support_unicode: false,
-        support_related: false, support_filetypes: false, support_largefiles: false, supports_obfuscation: false
-      )
+      def initialize(id, flags, ip, obf_tcp_port)
         super(OP_EDONKEYPROT, OP_IDCHANGE)
         @id = id
+        @flags = flags                 # eserver 16.44+
         @ip = ED2K.unpack_ip(ip) if ip # Not guaranteed
         @obf_tcp_port = obf_tcp_port   # Not guaranteed
-        @support_compression = !!support_compression
-        @support_newtags     = !!support_newtags
-        @support_unicode     = !!support_unicode
-        @support_related     = !!support_related
-        @support_filetypes   = !!support_filetypes
-        @support_largefiles  = !!support_largefiles
-        @support_obfuscation = !!support_obfuscation
       end
 
       # Whether we were assigned a High ID and are thus able to receive incoming TCP connections in the network.
       # @return [Boolean]
       def high?
-        @id == @ip
+        @ip && @id == ED2K.pack_ip(@ip)
+      end
+
+      # Whether this server supports sending and receiving compressed packets. It will be done automatically by this gem,
+      # unless otherwise specified, provided both server and client support it. This was introduced in eserver 16.40 /
+      # eMule0.30b via the packed protocol ({OP_PACKEDPROT}) to save bandwidth, and is typically used for search results
+      # or when we send our shared files list, only when both server and client support it.
+      # @return [Boolean]
+      def supports_compression
+        @flags && @flags & SRV_TCPFLG_COMPRESSION > 0
+      end
+
+      # Whether this server supports new-style tags. This is an internal feature that most users shouldn't concern themselves
+      # with, it will be used automatically by the gem whenever possible. It allows to compress tags in packets, and
+      # was introduced in eserver 16.46 / eMule0.42f. See {Tag} for the technical details.
+      # @return [Boolean]
+      def supports_newtags
+        @flags && @flags & SRV_TCPFLG_NEWTAGS > 0
+      end
+
+      # Whether this server supports Unicode strings (for file names, user names, etc). Introduced in eserver 17.1 /
+      # eMule0.44a.
+      # @return [Boolean]
+      def supports_unicode
+        @flags && @flags & SRV_TCPFLG_UNICODE > 0
+      end
+
+      # Whether this server supports searching for related files (the "Related" search in eMule). Introduced in
+      # eserver 17.5 / eMule0.46b.
+      # @return [Boolean]
+      def supports_related
+        @flags && @flags & SRV_TCPFLG_RELATEDSEARCH > 0
+      end
+
+      # Whether this server supports searching for multiple file extensions. This enables the classic search by type
+      # (e.g. "Video") instead of only individual extensions (e.g. "mkv"). Introduced in eserver 17.7.
+      # @return [Boolean]
+      def supports_filetypes
+        @flags && @flags & SRV_TCPFLG_TYPETAGINTEGER > 0
+      end
+
+      # Whether this server supports 64-bit file sizes, and thus files over 4GB. Sizes are nonetheless limited to 256GB,
+      # at least on eMule's side. Introduced in eserver 17.8 / emule0.47a.
+      # @return [Boolean]
+      def supports_largefiles
+        @flags && @flags & SRV_TCPFLG_LARGEFILES > 0
+      end
+
+      # Whether this server supports obfuscated TCP packets. Protocol obfuscation was added in eserver 17.13 / eMule0.47b,
+      # see {Obfuscation} for more information.
+      # @return [Boolean]
+      def supports_obfuscation
+        @flags && @flags & SRV_TCPFLG_TCPOBFUSCATION > 0
       end
     end
 

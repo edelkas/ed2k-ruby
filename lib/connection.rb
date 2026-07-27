@@ -91,6 +91,8 @@ module ED2K
     # Attempt to establish a TCP connection in a non-blocking way. May be recalled multiple times until we manage to
     # get a connection. Should only be called when we're the ones initiating the connection.
     # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
+    # @todo This method DOESN'T add the connection to the set monitored by the core. FIX!
+    #       Maybe most of these methods should be private.
     def connect
       tcp_setup()
       if !@socket || @socket.closed?
@@ -364,7 +366,7 @@ module ED2K
       end
 
       # Run the custom handler
-      raise "Received corrupt package #{opcode} for protocol #{protocol}" if !data
+      raise "Received corrupt TCP package %#.2x for protocol %#.2x" % [opcode, protocol] if !data
       @core.run_tcp_handler(protocol, opcode, self, data)
       true
     rescue RuntimeError => e
@@ -400,13 +402,33 @@ module ED2K
       end
 
       # Run the custom handler
-      raise "Received corrupt UDP package #{opcode} for protocol #{protocol}" if !data
+      raise "Received corrupt UDP package %#.2x for protocol %#.2x" % [opcode, protocol] if !data
       @core.run_udp_handler(protocol, opcode, self, data)
       true
     rescue RuntimeError => e
       @core.log_debug(e.message)
       @core.stats[:in_packets_bad] += 1
       false
+    end
+
+    # Parse a packet sent by this peer with the standard edonkey protocol over TCP. Default no-op that reports the opcode
+    # as unsupported; servers and clients override this to handle the TCP opcodes relevant to them.
+    # @param opcode [Integer] The packet's identifying opcode.
+    # @param packet [String] The packet's payload, without the header.
+    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
+    def parse_edonkey_tcp_packet(opcode, packet)
+      @core.log_debug{ "Received unsupported edonkey UDP packet %#.2x from #{format_name()}" % opcode }
+      nil
+    end
+
+    # Parse a packet sent by this peer with the extended eMule protocol over TCP. Default no-op that reports the opcode as
+    # unsupported; servers and clients override this to handle the TCP opcodes relevant to them.
+    # @param opcode [Integer] The packet's identifying opcode.
+    # @param packet [String] The packet's payload, without the header.
+    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
+    def parse_emule_tcp_packet(opcode, packet)
+      @core.log_debug{ "Received unsupported eMule UDP packet %#.2x from #{format_name()}" % opcode }
+      nil
     end
 
     # Parse a packet sent by this peer with the standard edonkey protocol over UDP. Default no-op that reports the opcode

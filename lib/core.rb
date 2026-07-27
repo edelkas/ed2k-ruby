@@ -68,8 +68,8 @@ module ED2K
       @waker_socket = nil # Wakes up socket thread select to send outgoing TCP and UDP packets
       @parse_ready = Queue.new # Wakes up packet thread to parse incoming TCP and UDP packets
       @write_ready = Queue.new # Connections ready to send a new UDP packet, not necessary for TCP (they each have their own queues)
-      @tcp_handlers = ::Hash.new { |h, k| h[k] = {} }
-      @udp_handlers = ::Hash.new { |h, k| h[k] = {} }
+      @tcp_handlers = Hash.new { |h, k| h[k] = {} }
+      @udp_handlers = Hash.new { |h, k| h[k] = {} }
       @down_bucket = TokenBucket.new(down_rate) # Meters everything we receive, across all peers
       @up_bucket   = TokenBucket.new(up_rate)   # Ditto for everything we send
       reload_preferences()
@@ -85,7 +85,7 @@ module ED2K
     def start(port = DEFAULT_TCP_PORT)
       config(tcp_port: port)
       raise "Failed to initialize TCP socket" unless init_tcp_socket()
-      raise "Failed to initialize UDP socket" unless init_udp_socket()
+      #raise "Failed to initialize UDP socket" unless init_udp_socket()
       init_waker()
       start_socket_thread()
       start_packet_thread()
@@ -516,18 +516,20 @@ module ED2K
         to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
         to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
 
-        # When a rate limit has run out of allowance we stop monitoring the peer sockets altogether until it recovers.
-        # Leaving them in the select set instead would busy-loop the thread: select is level triggered, so it would keep
-        # reporting them as ready while we decline to transfer anything. Dropping them and sleeping for exactly as long
-        # as the allowance needs to recover is both idle and prompt, which is what keeps the achieved rate at the limit
-        # rather than below it.
+        # When the rate limit has run out we stop monitoring the peer sockets, sleep minimally until it recovers.
+        # This allows to keep the achieved rate at the limit rather than below it.
+        # Leaving them in the select set only to decline transfer later would instead would busy-loop the thread.
         read_wait  = @down_bucket.wait_time
         write_wait = @up_bucket.wait_time
         to_read.clear  if read_wait > 0
         to_write.clear if write_wait > 0
 
-        to_read.push(@tcp_socket, @waker_socket, @udp_socket)
-        to_write.push(@udp_socket) if !@write_ready.empty?
+        # Always monitor control sockets for new activity. Add UDP socket if available.
+        to_read.push(@tcp_socket, @waker_socket)
+        if @udp_socket
+          to_read.push(@udp_socket)
+          to_write.push(@udp_socket) if !@write_ready.empty?
+        end
 
         timeout = TIMEOUT_WAIT
         timeout = read_wait  if read_wait  > 0 && read_wait  < timeout
@@ -669,6 +671,7 @@ module ED2K
     # one is a complete packet. We demultiplex by sender IP to the corresponding server or client and hand it off to that
     # connection's incoming UDP queue, scheduling it for the packet thread just like a TCP packet. Datagrams from unknown
     # peers are dropped (they can't be attributed to a connection yet).
+    # TODO: We should probably rescue many more exception types here from the socket stuff
     def receive_udp
       loop do
         begin
@@ -705,6 +708,7 @@ module ED2K
     # queue corresponds to one datagram queued on some connection, so we pop a token, pop that connection's next datagram
     # and send it to the connection's UDP address. If the send buffer is full we requeue the datagram and stop, retrying
     # when the socket reports writable again. Datagrams are best-effort, so send errors just drop the datagram.
+    # TODO: We should probably rescue many more exception types here from the socket stuff
     def send_udp
       loop do
         conn = @write_ready.pop(true)
