@@ -68,8 +68,9 @@ module ED2K
       @waker_socket = nil # Wakes up socket thread select to send outgoing TCP and UDP packets
       @parse_ready = Queue.new # Wakes up packet thread to parse incoming TCP and UDP packets
       @write_ready = Queue.new # Connections ready to send a new UDP packet, not necessary for TCP (they each have their own queues)
-      @tcp_handlers = Hash.new { |h, k| h[k] = {} }
-      @udp_handlers = Hash.new { |h, k| h[k] = {} }
+      @tcp_handlers = Hash.new { |h, k| h[k] = {} } # Handlers for TCP packets
+      @udp_handlers = Hash.new { |h, k| h[k] = {} } # Handlers for UDP packets
+      @handlers = {} # Handlers for other events
       @down_bucket = TokenBucket.new(down_rate) # Meters everything we receive, across all peers
       @up_bucket   = TokenBucket.new(up_rate)   # Ditto for everything we send
       reload_preferences()
@@ -280,11 +281,42 @@ module ED2K
       @loggers << logger
     end
 
+    # Add a handler for packets with valid but still unsupported protocols.
+    # @yieldparam server [Server,Client] The peer that sent this packet.
+    # @yieldparam packet [Packet] Packet containing the raw payload.
+    # @return [Proc] The resulting handler
+    def handle_unsupported_protocol(&handler)
+      @handlers[HAND_UNSUPPORTED_PROTOCOL] = handler
+    end
+
+    # Add a handler for packets with invalid or unrecognized protocols.
+    # @yieldparam server [Server,Client] The peer that sent this packet.
+    # @yieldparam packet [Packet] Packet containing the raw payload.
+    # @return [Proc] The resulting handler
+    def handle_unknown_protocol(&handler)
+      @handlers[HAND_UNKNOWN_PROTOCOL] = handler
+    end
+
+    # Add a handler for packets with correct protocol but unrecognized opcodes.
+    # @yieldparam server [Server,Client] The peer that sent this packet.
+    # @yieldparam packet [Packet] Packet containing the raw payload.
+    # @return [Proc] The resulting handler
+    def handle_unsupported_opcode(&handler)
+      @handlers[HAND_UNSUPPORTED_OPCODE] = handler
+    end
+
+    # Add a handler for packets with correct protocol and opcode but corrupt payloads.
+    # @yieldparam server [Server,Client] The peer that sent this packet.
+    # @yieldparam packet [Packet] Packet containing the raw payload.
+    # @return [Proc] The resulting handler
+    def handle_corrupt_packet(&handler)
+      @handlers[HAND_CORRUPT_PACKET] = handler
+    end
 
     # Add a handler for the server reject packet. It contains no payload and is sent when the server has rejected our
     # last command, usually due to malformed parameters, incorrect protocol being used, or something similar.
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Packet::Reject] This will be empty, but is left here for compatibility.
+    # @yieldparam packet [Packet::Reject] This will be empty, but is left here for compatibility.
     # @return [Proc] The resulting handler
     def handle_reject(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_REJECT] = handler
@@ -294,7 +326,7 @@ module ED2K
     # This packet is only sent as a response to {Server#send_server_list_request}.
     # @see Server#send_server_list_request
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Packet::ServerList] Contains the list of servers' IP and port pairs.
+    # @yieldparam packet [Packet::ServerList] Contains the list of servers' IP and port pairs.
     # @return [Proc] The resulting handler
     def handle_server_list(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERLIST] = handler
@@ -303,7 +335,7 @@ module ED2K
     # Add a handler for the server status packet. It contains the server's current user and file count, and is usually
     # received right after logging in.
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Packet::ServerStatus] Contains the server's user and file count.
+    # @yieldparam packet [Packet::ServerStatus] Contains the server's user and file count.
     # @return [Proc] The resulting handler
     def handle_server_status(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERSTATUS] = handler
@@ -319,7 +351,7 @@ module ED2K
     # - `[emDynIP: StaticHostName.host:Port]` -> Server instructs us to use DNS because their IP is dynamic and thus subject to change
     #   ([read more](https://www.emule-project.com/home/perl/help.cgi?l=1&topic_id=132&rm=show_topic)).
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Packet::ServerMessage] Contains the list of messages.
+    # @yieldparam packet [Packet::ServerMessage] Contains the list of messages.
     # @return [Proc] The resulting handler
     def handle_server_message(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERMESSAGE] = handler
@@ -330,7 +362,7 @@ module ED2K
     # it contains our assigned ID, but technically it can happen at any time, so it should be carefully monitored. Since
     # Lugdunum 16.44 it also contains flags with server capabilities, as well as additional information about our client.
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Packet::IdChange] Contains our new ID, server flags, public IP, etc.
+    # @yieldparam packet [Packet::IdChange] Contains our new ID, server flags, public IP, etc.
     # @return [Proc] The resulting handler
     def handle_id_change(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_IDCHANGE] = handler
@@ -340,7 +372,7 @@ module ED2K
     # the IP address and port to connect to it, and its name and short description. This packet is sent as a response to
     # {Server#send_server_list_request}.
     # @yieldparam server [Server] The server that sent this packet.
-    # @yieldparam payload [Packet::ServerIdentification] Contains the server's hash, IP, port, name and description.
+    # @yieldparam packet [Packet::ServerIdentification] Contains the server's hash, IP, port, name and description.
     # @return [Proc] The resulting handler
     def handle_server_identification(&handler)
       @tcp_handlers[OP_EDONKEYPROT][OP_SERVERIDENT] = handler
@@ -463,6 +495,12 @@ module ED2K
     # handlers live in their own registry, separate from the TCP handlers used by {#run_tcp_handler}.
     def run_udp_handler(protocol, opcode, peer, data)
       @udp_handlers&.[](protocol)&.[](opcode)&.call(peer, data)
+    end
+
+    # @private
+    # Run a generic event handler. For packet-specific handlers, see {#run_tcp_handler} and {#run_udp_handler}.
+    def run_handler(code, peer, data)
+      @handlers&.[](code)&.call(peer, data)
     end
 
     # @private

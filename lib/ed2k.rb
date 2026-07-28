@@ -231,6 +231,15 @@ module ED2K
   ST_TCPPORTOBFUSCATION = 0x97 # [uint16] TCP port for obfuscated connections
   ST_UDPPORTOBFUSCATION = 0x98 # [uint16] UDP port for obfuscated connections
 
+  # ------------ HANDLER CODES
+  # Codes to index special event handlers
+
+
+  HAND_UNSUPPORTED_PROTOCOL = 0 # Received packet with valid but still unsupported protocol
+  HAND_UNKNOWN_PROTOCOL     = 1 # Received packet with unknown protocol
+  HAND_UNSUPPORTED_OPCODE   = 2 # Received packet with valid protocol but unsupported opcode
+  HAND_CORRUPT_PACKET       = 3 # Received packet with valid protocol and opcode but corrupt payload
+
   # Convert an IPv4 address string into an integer.
   # @param ip [String] The IP address in its usual representation.
   # @return [Integer] The packed IP

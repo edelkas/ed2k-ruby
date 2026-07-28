@@ -353,24 +353,31 @@ module ED2K
       payload = packet.byteslice(head, size) # Taking the payload out is cheaper than shifting it over the header
 
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
-      case protocol
+      data = case protocol
       when OP_EDONKEYPROT
-        data = parse_edonkey_tcp_packet(opcode, payload)
-      when OP_EMULEPROT
-        data = parse_emule_tcp_packet(opcode, payload)
-      when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
-        @core.log_debug("Received unsupported ed2k protocol #{protocol}")
+        parse_edonkey_tcp_packet(opcode, payload)
+      when OP_EMULEPROT, OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
+        @core.log_debug{"Received unsupported ed2k protocol #{protocol}"}
+        @core.run_handler(HAND_UNSUPPORTED_PROTOCOL, self, Packet::Raw.new(protocol, opcode, payload))
         return true
       else
+        @core.run_handler(HAND_UNKNOWN_PROTOCOL, self, Packet::Raw.new(protocol, opcode, payload))
         raise "Received unknown ed2k protocol #{protocol}"
       end
 
       # Run the custom handler
-      raise "Received corrupt TCP package %#.2x for protocol %#.2x" % [opcode, protocol] if !data
-      @core.run_tcp_handler(protocol, opcode, self, data)
+      if !data
+        @core.run_handler(HAND_CORRUPT_PACKET, self, Packet::Raw.new(protocol, opcode, payload))
+        raise "Received corrupt TCP packet %#.2x for protocol %#.2x from #{format_name()}" % [opcode, protocol]
+      elsif data.is_a?(Packet::Raw)
+        @core.log_debug{ "Received unsupported TCP packet %#.2x for protocol %#.2x from #{format_name()}" % [opcode, protocol] }
+        @core.run_handler(HAND_UNSUPPORTED_OPCODE, self, data)
+      else
+        @core.run_tcp_handler(protocol, opcode, self, data)
+      end
       true
     rescue RuntimeError => e
-      @core.log_debug(e.message)
+      @core.log_debug{ e.message }
       @core.stats[:in_packets_bad] += 1
       false
     end
@@ -389,66 +396,33 @@ module ED2K
       payload = packet.byteslice(UDP_PACKET_HEADER_SIZE, length - UDP_PACKET_HEADER_SIZE)
 
       # Parse packet - depending on protocol - and obtain opcode-specific packet data
-      case protocol
+      data = case protocol
       when OP_EDONKEYPROT
-        data = parse_edonkey_udp_packet(opcode, payload)
-      when OP_EMULEPROT
-        data = parse_emule_udp_packet(opcode, payload)
-      when OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
+        parse_edonkey_udp_packet(opcode, payload)
+      when OP_EMULEPROT, OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
         @core.log_debug("Received unsupported ed2k UDP protocol #{protocol}")
+        @core.run_handler(HAND_UNSUPPORTED_PROTOCOL, self, Packet::Raw.new(protocol, opcode, payload))
         return true
       else
+        @core.run_handler(HAND_UNKNOWN_PROTOCOL, self, Packet::Raw.new(protocol, opcode, payload))
         raise "Received unknown ed2k UDP protocol #{protocol}"
       end
 
       # Run the custom handler
-      raise "Received corrupt UDP package %#.2x for protocol %#.2x" % [opcode, protocol] if !data
-      @core.run_udp_handler(protocol, opcode, self, data)
+      if !data
+        @core.run_handler(HAND_CORRUPT_PACKET, self, Packet::Raw.new(protocol, opcode, payload))
+        raise "Received corrupt UDP packet %#.2x for protocol %#.2x from #{format_name()}" % [opcode, protocol]
+      elsif data.is_a?(Packet::Raw)
+        @core.log_debug{ "Received unsupported UDP packet %#.2x for protocol %#.2x from #{format_name()}" % [opcode, protocol] }
+        @core.run_handler(HAND_UNSUPPORTED_OPCODE, self, data)
+      else
+        @core.run_udp_handler(protocol, opcode, self, data)
+      end
       true
     rescue RuntimeError => e
-      @core.log_debug(e.message)
+      @core.log_debug{ e.message }
       @core.stats[:in_packets_bad] += 1
       false
-    end
-
-    # Parse a packet sent by this peer with the standard edonkey protocol over TCP. Default no-op that reports the opcode
-    # as unsupported; servers and clients override this to handle the TCP opcodes relevant to them.
-    # @param opcode [Integer] The packet's identifying opcode.
-    # @param packet [String] The packet's payload, without the header.
-    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
-    def parse_edonkey_tcp_packet(opcode, packet)
-      @core.log_debug{ "Received unsupported edonkey UDP packet %#.2x from #{format_name()}" % opcode }
-      nil
-    end
-
-    # Parse a packet sent by this peer with the extended eMule protocol over TCP. Default no-op that reports the opcode as
-    # unsupported; servers and clients override this to handle the TCP opcodes relevant to them.
-    # @param opcode [Integer] The packet's identifying opcode.
-    # @param packet [String] The packet's payload, without the header.
-    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
-    def parse_emule_tcp_packet(opcode, packet)
-      @core.log_debug{ "Received unsupported eMule UDP packet %#.2x from #{format_name()}" % opcode }
-      nil
-    end
-
-    # Parse a packet sent by this peer with the standard edonkey protocol over UDP. Default no-op that reports the opcode
-    # as unsupported; servers and clients override this to handle the UDP opcodes relevant to them.
-    # @param opcode [Integer] The packet's identifying opcode.
-    # @param packet [String] The packet's payload, without the header.
-    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
-    def parse_edonkey_udp_packet(opcode, packet)
-      @core.log_debug{ "Received unsupported edonkey UDP packet %#.2x from #{format_name()}" % opcode }
-      nil
-    end
-
-    # Parse a packet sent by this peer with the extended eMule protocol over UDP. Default no-op that reports the opcode as
-    # unsupported; servers and clients override this to handle the UDP opcodes relevant to them.
-    # @param opcode [Integer] The packet's identifying opcode.
-    # @param packet [String] The packet's payload, without the header.
-    # @return Packet-specific processed payload, or `nil` if processing failed or the opcode is unsupported.
-    def parse_emule_udp_packet(opcode, packet)
-      @core.log_debug{ "Received unsupported eMule UDP packet %#.2x from #{format_name()}" % opcode }
-      nil
     end
 
     # Append a received UDP datagram to this connection's incoming UDP queue, to later be processed by the packet thread.

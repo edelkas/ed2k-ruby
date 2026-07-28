@@ -183,8 +183,8 @@ module ED2K
       @login_time = pending ? Time.now : nil
     end
 
-    # Parse a packet sent by the server with the standard edonkey protocol. Returns the data in a standard form so
-    # that the custom handlers can consume it.
+    # Parse a packet sent by the server with the standard edonkey protocol. Returns a Packet object, ideally a subclass
+    # unless there's no good fit due to the packet being unsupported. Returns nil if the packet is corrupt.
     def parse_edonkey_tcp_packet(opcode, packet)
       case opcode
       when OP_REJECT
@@ -200,8 +200,7 @@ module ED2K
       when OP_SERVERIDENT
         parse_server_identification(packet)
       else
-        @core.log_debug{ "Received unsupported server edonkey packet %#.2x from #{format_name()}" % opcode }
-        nil
+        Packet::Raw.new(OP_EDONKEYPROT, opcode, packet)
       end
     end
 

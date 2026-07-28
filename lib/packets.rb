@@ -34,21 +34,42 @@ module ED2K
   # the UDP headers and don't require any buffering.
   class Packet
 
-    # The packet's protocol, can be one of five: {OP_EDONKEYPROT}, {OP_EMULEPROT}, {OP_PACKEDPROT}, {OP_KADEMLIAHEADER}
-    # or {OP_KADEMLIAPACKEDPROT}.
+    # The packet's ed2k protocol, can be one of five: {OP_EDONKEYPROT}, {OP_EMULEPROT}, {OP_PACKEDPROT},
+    # {OP_KADEMLIAHEADER} or {OP_KADEMLIAPACKEDPROT}.
     # @return [Integer]
     attr_reader :protocol
 
-    # The packet's opcode.
+    # The packet's protocol-dependent opcode identifies the packet type.
     # @return [Integer]
     attr_reader :opcode
 
-    # @param protocol [Integer] The packet's protocol, can be one of five: {OP_EDONKEYPROT}, {OP_EMULEPROT}, {OP_PACKEDPROT},
-    #                           {OP_KADEMLIAHEADER} or {OP_KADEMLIAPACKEDPROT}.
-    # @param opcode [Integer] The packet's protocol-dependent opcode.
+    # @param protocol [Integer] See {#protocol}.
+    # @param opcode [Integer] See {#opcode}.
     def initialize(protocol, opcode)
       @protocol = protocol
       @opcode = opcode
+    end
+
+    # Auxiliary class to store unsupported or corrupt packets by saving the raw payload instead of parsing it.
+    # This is used predominantly for two scenarios:
+    # - The packet is valid, but we still don't support it, so we have no subclass that fits.
+    # - The packet's header is valid, but the payload is corrupt or we failed to parse it.
+    #
+    # Whenever a packet is supported and parses properly, the corresponding {Packet} subclass should be used instead.
+    # If even the header is invalid the packet is dropped altogether (see {Connection#process_tcp_packet}).
+    class Raw < Packet
+
+      # The packet's raw payload, could be empty.
+      # @return [String]
+      attr_reader :payload
+
+      # @param protocol [Integer] See {#protocol}.
+      # @param opcode [Integer] See {#opcode}.
+      # @param payload [String] See {#payload}.
+      def initialize(protocol, opcode, payload)
+        super(protocol, opcode)
+        @payload = payload
+      end
     end
 
     # TCP packet sent by servers with their list of other known servers.
@@ -300,5 +321,7 @@ module ED2K
         @tags = tags
       end
     end
-  end
-end
+
+  end # Packet
+
+end # ED2K

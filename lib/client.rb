@@ -77,5 +77,13 @@ module ED2K
       name = @name || '?'
       "#{@id}@#{ip} '#{name}'"
     end
+
+    private
+
+    # Parse a packet sent by the client with the standard edonkey protocol. Returns the data in a standard form so
+    # that the custom handlers can consume it.
+    def parse_edonkey_tcp_packet(opcode, packet)
+      Packet::Raw.new(OP_EDONKEYPROT, opcode, packet)
+    end
   end
 end
