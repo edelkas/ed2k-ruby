@@ -285,7 +285,7 @@ module ED2K
         return
       end
       @hash, ip, port = packet.unpack('a16L<S<')
-      tags = Tag::read(packet[22..-1], core: @core)
+      tags = Tag.read(packet, 22, core: @core)
       if !tags
         @core.log_debug("Failed to parse tags in server identification packet from #{format_name()}")
         name, description = nil, nil

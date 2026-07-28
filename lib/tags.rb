@@ -72,11 +72,14 @@ module ED2K
     # Parse a taglist. A taglist is prefixed by the tag count.
     # @note Unknown tag types (bool, bool array, bsob) are consumed but rejected.
     # @param data [String] The raw binary data to unpack the tags from.
+    # @param offset [Integer] Where in the string to start parsing. Use this to prevent unnecessary string slicing.
     # @param core [Core,nil] The core to log unsupported tag types to, if any. Optional, since tag parsing itself doesn't
     #        need a core, and callers that don't have one at hand can simply omit it.
     # @return [Hash] A hash mapping tag names to the corresponding values. Tag names can be integers or strings.
-    def self.read(data, core: nil)
+    # @todo Perhaps we should return the end offset instead, so that parsing can continue in the caller.
+    def self.read(data, offset = 0, core: nil)
       stream = StringIO.new(data)
+      stream.seek(offset, IO::SEEK_SET) if offset > 0
       count = stream.read(4).unpack1('L<')
       count.times.map{
         # Parse type and name (old-style vs new-style tags)
