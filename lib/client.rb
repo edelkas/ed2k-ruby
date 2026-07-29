@@ -36,6 +36,8 @@ module ED2K
     # to them by requesting a callback through the server.
     attr_reader :id
 
+    # Pass `socket` to create a client that connected to us. Otherwise, pass `id` and `port`. If known, the `id` should
+    # be the `ip`, otherwise it's the client's ID in the server they're connected to (see {#id}).
     # @param id [Integer] The ID of the client (see {#id})
     # @param port [Integer] The port the client is listening to.
     # @param socket [Socket] The socket, if we're already connected to the client.
@@ -46,15 +48,11 @@ module ED2K
       @hash = nil
 
       # Connection properties
-      @socket = socket
-      if @socket
-        addr = @socket.remote_address
-        @ip          = addr.ip_address
-        @tcp_port    = addr.ip_port
-        @tcp_address = Addrinfo.new(Socket.pack_sockaddr_in(@tcp_port, @ip))
-      else
-        @tcp_port = port
-      end
+      @socket      = socket
+      @ip          = @socket ? @socket.remote_address.ip_address : high_id? ? ED2K.unpack_ip(@id) : nil
+      @tcp_port    = port # (don't infer from socket, it's an incoming connection and thus the port is ephemeral)
+      @server_ip   = nil
+      @server_port = nil
 
       # Other properties
       @name     = ''
@@ -67,15 +65,33 @@ module ED2K
       @supports_secure_ident = false
 
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
-      udp_setup()
+      #udp_setup()
+    end
+
+    def high_id?
+      !!@id && @id > 0xFFFFFF
     end
 
     # Format the client's name in human-readable form
     # @return [String] `ID@IP:Port 'Name'`
     def format_name
-      ip = @tcp_address ? "%s:%d" % [@tcp_address.ip_address, @tcp_address.ip_port] : '?'
-      name = @name || '?'
-      "#{@id}@#{ip} '#{name}'"
+      "%s (%d@%s:%d)" % [@name || '(?)', @id || 0, @ip || '(?)', @tcp_port || 0]
+    end
+
+    # Send a Hello or HelloAnswer packet to this server / client. This packet should be the first one after establishing
+    # a successful TCP connection. It should also be sent in response to a received Hello packet, with `answer: true`.
+    # It is used to exchange information and capabilities. Note it's also received from servers during the High ID flow.
+    # @param answer [Boolean] Whether this packet is a Hello or a HelloAnswer packet.
+    def send_hello(answer, hash, id, port: @core.tcp_port, server_ip: 0, server_port: 0, name: nil, version_edonkey: EDONKEYVERSION)
+      data = answer ? ''.b : "\x10".b
+      tag_count = 2 + (name ? 1 : 0)
+      data = [hash, id, port, tag_count].pack('a16L<S<L<')
+      data << Tag::write(CT_NAME, name) if name
+      data << Tag::write(CT_VERSION, version_edonkey)
+      data << Tag::write(CT_PORT, port)
+      data << [server_ip, server_port].pack('L<S<')
+      queue_tcp_packet(OP_EDONKEYPROT, answer ? OP_HELLOANSWER : OP_HELLO, data)
+      @core.log_debug("Sent hello#{answer ? ' answer' : ''} request to #{format_name()}")
     end
 
     private
@@ -83,7 +99,43 @@ module ED2K
     # Parse a packet sent by the client with the standard edonkey protocol. Returns the data in a standard form so
     # that the custom handlers can consume it.
     def parse_edonkey_tcp_packet(opcode, packet)
-      Packet::Raw.new(OP_EDONKEYPROT, opcode, packet)
+      case opcode
+      when OP_HELLO, OP_HELLOANSWER
+        parse_hello(packet, opcode == OP_HELLOANSWER)
+      else
+        Packet::Raw.new(OP_EDONKEYPROT, opcode, packet)
+      end
     end
-  end
-end
+
+    # Parse a Hello packet. For now, we only parse the bare minimum required for communicating with servers.
+    # TODO: Parse the Server and add it to the list
+    def parse_hello(packet, answer)
+      if packet.size < (answer ? 0 : 1) + 16 + 4 + 2 + 4 # Hello packet starts with hash size, HelloAnswer doesn't
+        @core.log_debug("Corrupt hello packet (too short)")
+        return
+      end
+      packet = StringIO.new(packet)
+      packet.read(1) unless answer
+      @hash, @id, @tcp_port = packet.read(16 + 4 + 2).unpack('a16L<S<')
+      tags = Tag.read(packet, core: @core)
+      if !tags
+        @core.log_debug("Failed to parse tags in client hello packet from #{format_name()}")
+      else
+        name, version, port = tags[CT_NAME], tags[CT_VERSION], tags[CT_PORT]
+        tags.reject!{ |k, v| [CT_NAME, CT_VERSION, CT_PORT].include?(k) }
+        if port && port != @tcp_port
+          @core.log_debug("Received different ports in hello packet: #{@tcp_port} vs #{port}")
+          @tcp_port = port
+        end
+      end
+      @server_ip, @server_port = packet.read(6).unpack('L<S<') if packet.size - packet.pos >= 6
+      @core.log_debug(
+        "Received hello packet from #{format_name()}: hash=#{@hash.unpack1('H*')}, "\
+        "id=#{@id}, port=#{@tcp_port}, name=#{name}, version=#{version}, more tags=#{tags&.size}"
+      )
+      Packet::Hello.new(answer, @hash, @id, @tcp_port, @server_ip, @server_port, name, version)
+    end
+
+  end # Client
+
+end # ED2K

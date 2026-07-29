@@ -313,6 +313,17 @@ module ED2K
       @handlers[HAND_CORRUPT_PACKET] = handler
     end
 
+    # Add a handler for the Hello and HelloAnswer packets. They are exchanged between clients after a successful TCP
+    # connection in order to exchange information and capabilities. They are also exchanged between servers and clients
+    # during the High ID flow (see {Server}), but servers connect to us as simple clients for this process.
+    # @yieldparam peer [Client] The client (or server) that sent this packet.
+    # @yieldparam packet [Packet::Hello] Contains a lot of useful details about the client.
+    # @return [Proc] The resulting handler
+    def handle_hello(&handler)
+      @tcp_handlers[OP_EDONKEYPROT][OP_HELLO] = handler
+      @tcp_handlers[OP_EDONKEYPROT][OP_HELLOANSWER] = handler
+    end
+
     # Add a handler for the server reject packet. It contains no payload and is sent when the server has rejected our
     # last command, usually due to malformed parameters, incorrect protocol being used, or something similar.
     # @yieldparam server [Server] The server that sent this packet.
@@ -408,7 +419,8 @@ module ED2K
     end
 
     # Add a new client to the list of known ones. If we're already connected we can simply supply the socket, otherwise
-    # we need to provide both the address and port.
+    # we need to provide both the address and port. Thus, the former is used whenever they connected to us, whereas the
+    # later is used when we'll establish the connection first.
     # @param ip [String] The IPv4 address of the client
     # @param port [Integer] The port the client is listening to
     # @param socket [Socket] The socket if the connection is already established (they connected to us)
@@ -433,7 +445,7 @@ module ED2K
       shared = servers_at(ip)
       if !shared.empty?
         log_debug("New server at an already known IP, %s now hosts %d servers (%s)" % [
-          ip, shared.size + 1, (shared.map{ |srv| srv.tcp_address.ip_port } << port).join(', ')
+          ip, shared.size + 1, (shared.map{ |srv| srv.tcp_port } << port).join(', ')
         ])
       end
       server = Server.new(ip, port, core: self)
@@ -535,6 +547,7 @@ module ED2K
 
     # Add a message to the log of this core. The message may be supplied as a block instead of a string, in which case
     # it's only built when something is actually going to consume it. This matters on the hot paths.
+    # TODO: Move the standard logger to a sort of "default logger", and also print all lines at once!
     def log(msg = nil, level = LOG_LEVEL_INFO)
       return if block_given? && level > @log_level && @loggers.empty?
       msg = yield if block_given?
@@ -548,6 +561,7 @@ module ED2K
     end
 
     # Socket thread permanently monitors sockets for R/W activity
+    # @todo THIS IS NOT ROBUST! A single exception nukes the entire thread.
     def run_socket_thread
       while @thSockRun
         # Block until next socket activity
@@ -619,6 +633,7 @@ module ED2K
     # in the ready queue is a scheduling token, a [connection, channel, count] triple (channel is :tcp or :udp), so we
     # process exactly as many packets as the token accounts for. The blocking pop means the thread consumes no resources
     # while idle.
+    # @todo THIS IS NOT ROBUST! A single exception nukes the entire thread.
     def run_packet_thread
       while @thPackRun
         token = @parse_ready.pop
@@ -751,9 +766,9 @@ module ED2K
       loop do
         conn = @write_ready.pop(true)
         packet = conn.dequeue_outgoing_udp
-        next if !packet || !conn.udp_address # Stale token (queue already drained) or unknown destination
+        next if !packet || !conn.udp_port # Stale token (queue already drained) or unknown destination
         begin
-          @udp_socket.sendmsg_nonblock(packet, 0, conn.udp_address)
+          @udp_socket.sendmsg_nonblock(packet, 0, Socket.sockaddr_in(conn.udp_port, conn.ip))
           @stats[:out_data] += packet.bytesize
           @up_bucket.deduct(packet.bytesize)
         rescue IO::WaitWritable # Send buffer full, requeue and retry on the next writable event
@@ -796,7 +811,7 @@ module ED2K
     # @param ip [String] The IPv4 address to look up.
     # @return [Array<Server>] The servers at that address, possibly empty.
     def servers_at(ip)
-      @servers.each_value.select{ |server| server.tcp_address.ip_address == ip }
+      @servers.each_value.select{ |server| server.ip == ip }
     end
 
     # Figure out which server a message came from, given only the IP address it was sent from. Incoming messages don't
@@ -811,7 +826,7 @@ module ED2K
       candidates = servers_at(ip)
       return [candidates.first, false] if candidates.size <= 1
       preferred = prefer ? candidates.select{ |server| prefer.call(server) } : []
-      return [preferred.first, false] if preferred.size == 1
+      return [preferred.first, false] if preferred.size <= 1
       [candidates.first, true]
     end
 
@@ -827,33 +842,24 @@ module ED2K
       wake_socket_thread()
     end
 
-    # Parse a new incoming connection and retrieve it (if already known) or create it. Servers only ever connect to us to
-    # answer a login request, so that's what we use to tell apart several servers sharing the IP the connection came
-    # from. If that isn't enough we drop the connection, since attributing it to the wrong server (or, worse, taking it
-    # for a brand new client) would be more harmful than losing it.
+    # Parse a new incoming TCP connection and retrieve the {Client} (if already known) or create it. {Server}s only ever
+    # connect to us after a login request, in order to determine if we're reachable and should thus be assigned a High ID.
+    # However, they do so "as clients".
     def new_connection(socket)
-      addr = socket.remote_address
-      server, ambiguous = resolve_server(addr.ip_address, ->(srv){ srv.pending_login })
-      if ambiguous
-        log_error("Received new incoming connection from #{addr.ip_address}:#{addr.ip_port}, but several known servers "\
-                  "share that IP and the login state doesn't tell them apart, dropping it")
-        return socket.close
-      end
-
-      if host = server
-        log_debug("Received new incoming connection from known server #{host.format_name()}")
-      elsif host = get_client(address: addr)
+      if host = get_client(ip: socket.remote_address.ip_address)
         log_debug("Received new incoming connection from known client #{host.format_name()}")
       else
         host = add_client(socket: socket)
       end
       host.tcp_setup(socket)
       add_connection(host)
+    rescue
+      nil
     end
 
     # Stop monitoring a connection and remove the reference to it
     def remove_connection(conn)
-      @connections.delete(conn.socket.fileno)
+      @connections.delete(conn.socket&.fileno)
     end
 
     # Initialize stats for this session

@@ -30,7 +30,7 @@ with_core do |core|
   # '127.0.0.1:' must not prefix-match '127.0.0.10:'
   core.add_server('127.0.0.10', 4661)
   found = core.get_server(ip: '127.0.0.10', port: 4661)
-  check(found && found.tcp_address.ip_address == '127.0.0.10', "similar IPs don't collide")
+  check(found && found.ip == '127.0.0.10', "similar IPs don't collide")
 
   section 'Clients are keyed by IP alone'
   # Deliberately port-blind, so one host can't take up several client slots by using several ports.

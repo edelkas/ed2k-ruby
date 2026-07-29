@@ -10,8 +10,8 @@ section 'A peer\'s UDP address is derived from its TCP port'
 with_core do |core|
   server = core.add_server('127.0.0.1', 5000)
   check(server.udp_port == 5004, "the UDP port is the TCP port plus four (got #{server.udp_port.inspect})")
-  check(server.udp_address && server.udp_address.ip_port == 5004 && server.udp_address.ip_address == '127.0.0.1',
-        "the UDP address is built from it (got #{server.udp_address&.ip_port.inspect})")
+  check(server.udp_port == 5004 && server.ip == '127.0.0.1',
+        "the UDP address is built from it (got #{server.udp_port.inspect})")
 end
 
 section 'Receiving datagrams'
@@ -83,7 +83,7 @@ section 'Sending without a known address is refused'
 with_core do |core|
   # A client we've never seen an address for can't be sent to
   orphan = ED2K::Client.new(id: nil, port: 7000, core: core)
-  check(orphan.udp_address.nil?, "a client with no IP has no UDP address")
+  check(orphan.udp_port.nil?, "a client with no IP has no UDP address")
   check(orphan.queue_udp_packet(ED2K::OP_EDONKEYPROT, 0x01, 'x') == false, "queueing a datagram to it is refused")
   check(core.instance_variable_get(:@thSock).alive?, "the socket thread is unaffected")
 end

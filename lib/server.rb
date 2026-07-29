@@ -56,7 +56,6 @@ module ED2K
       # Basic properties we need to establish a connection or send packets
       @ip          = ip
       @tcp_port    = port
-      @tcp_address = Addrinfo.new(Socket.pack_sockaddr_in(@tcp_port, @ip))
       @dns         = nil
 
       # These properties aren't known until we query the server's status and description
@@ -79,7 +78,7 @@ module ED2K
       @login_time    = nil
 
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
-      udp_setup()
+      #udp_setup()
     end
 
     # Send login request to the server. We communicate basic information about ourselves, as well as client capabilities
@@ -171,8 +170,7 @@ module ED2K
     # Format the server's name in human-readable form.
     # @return [String] Nick (IP:Port)
     def format_name
-      ip = "%s:%d" % [@tcp_address.ip_address, @tcp_address.ip_port]
-      !@name.empty? ? "#{@name} (#{ip})" : ip
+      !@name.empty? ? "#{@name} (#{@ip}:#{@tcp_port})" : "#{@ip}:#{@tcp_port}"
     end
 
     private
@@ -187,6 +185,8 @@ module ED2K
     # unless there's no good fit due to the packet being unsupported. Returns nil if the packet is corrupt.
     def parse_edonkey_tcp_packet(opcode, packet)
       case opcode
+      when OP_HELLO, OP_HELLOANSWER
+        parse_hello(opcode, packet)
       when OP_REJECT
         parse_reject()
       when OP_SERVERLIST
@@ -224,7 +224,7 @@ module ED2K
       Packet::ServerList.new(servers)
     end
 
-    # Contains the server's current user and file count. Received after logging in, typically.
+    # Contains the server's current user and file count. Received after logging in, and also periodically as pings.
     def parse_server_status(packet)
       if packet.size < 8
         @core.log_debug("Received corrupt server status from #{format_name()}")
@@ -274,7 +274,7 @@ module ED2K
       flags ||= 0
       self.pending_login = false # The ID assignment is the answer to our login request
       @core.log_info("Received new ID from #{format_name()}: #{id}")
-      @core.log_debug("Our IP is #{ED2K::unpack_ip(ip)}") if ip
+      @core.log_debug("Received ID change packet: id=#{id}, flags=#{flags}, ip=#{ED2K::unpack_ip(ip || 0)}, obfTCPport=#{obfuscated_tcp_port}")
       Packet::IdChange.new(id, flags, ip, obfuscated_tcp_port)
     end
 

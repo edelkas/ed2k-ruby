@@ -1,5 +1,5 @@
 module ED2K
- # Encapsulates the functionality that is common to each node connecting to the ed2k network, that is, both servers and
+  # Encapsulates the functionality that is common to each node connecting to the ed2k network, that is, both servers and
   # clients. It's a wrapper around a socket that manages I/O and its associated resources. Internally, each connection has
   # 2 buffers (for partial TCP reads and writes) as well as 5 thread-safe queues:
   #
@@ -16,16 +16,17 @@ module ED2K
   # @todo Add integrity checks to the received packets (correct header...)
   module Connection
 
-    # The address structure, containing info such as IP, port, socket type and protocol.
-    # @return [Addrinfo]
-    attr_reader :tcp_address
+    # The IP address of the node. Might be `nil` for clients if we haven't connected to them yet, or if they're not
+    # reachable on the advertised port, since servers only share IP addresses of other clients whenever they are.
+    # @return [String,nil]
+    attr_reader :ip
 
-    # The address structure used to send UDP datagrams to this peer, if known. By convention its port is the peer's TCP
-    # port plus 4. May be `nil` if we don't (yet) know the peer's IP or port.
-    # @return [Addrinfo,nil]
-    attr_reader :udp_address
+    # The TCP port the node is listening to for incoming connections. Might be `nil` for clients if they're unreachable,
+    # or when the hello handshake hasn't been done yet.
+    # @return [Integer,nil]
+    attr_reader :tcp_port
 
-    # The UDP port this peer listens on, by convention its TCP port plus 4. May be `nil` if the peer's port is unknown.
+    # The UDP port this peer listens on, by convention its TCP port plus 4.
     # @return [Integer,nil]
     attr_reader :udp_port
 
@@ -45,7 +46,6 @@ module ED2K
       @udp_incoming_queue = Queue.new
       @udp_outgoing_queue = Queue.new
       @udp_port = @tcp_port ? @tcp_port + 4 : nil
-      @udp_address = (@ip && @udp_port) ? Addrinfo.new(Socket.pack_sockaddr_in(@udp_port, @ip)) : nil
       @pending_udp = 0
     end
 
@@ -94,12 +94,16 @@ module ED2K
     # @todo This method DOESN'T add the connection to the set monitored by the core. FIX!
     #       Maybe most of these methods should be private.
     def connect
+      if !@ip || !@tcp_port
+        @core.log_error("Can't connect to #{format_name()}, missing IP address or TCP port")
+        return false
+      end
       tcp_setup()
       if !@socket || @socket.closed?
         @core.log_debug("Connecting to #{format_name()}...")
         @socket = Socket.new(:INET, :STREAM)
       end
-      @socket.connect_nonblock(@tcp_address) == 0
+      @socket.connect_nonblock(Socket.sockaddr_in(@tcp_port, @ip)) == 0
     rescue Errno::EISCONN
       @core.log_debug("Connected to #{format_name()}")
       true   # We are connected
@@ -312,7 +316,7 @@ module ED2K
     # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
     # @return [Boolean] Whether the packet was successfully queued for sending or not.
     def queue_udp_packet(protocol, opcode, payload = '')
-      return false if !@udp_address
+      return false if !@udp_port
       size = payload.size
       @udp_outgoing_queue.push(payload.prepend([protocol, opcode].pack('CC')))
       @core.schedule_udp_send(self)
@@ -336,6 +340,27 @@ module ED2K
     # @param packet [String] The raw datagram that could not be sent.
     def requeue_outgoing_udp(packet)
       @udp_outgoing_queue.push(packet)
+    end
+
+    # Append a received UDP datagram to this connection's incoming UDP queue, to later be processed by the packet thread.
+    # Called by the socket thread after it demultiplexes a datagram to this connection.
+    # @param packet [String] A binary string containing the raw datagram
+    def enqueue_incoming_udp(packet)
+      @udp_incoming_queue.push(packet)
+    end
+
+    # Consumes and processes a single pending packet from one of the incoming queues, corresponding to one scheduling
+    # token popped by the packet thread. The channel (:tcp or :udp) selects the queue and the parser. If the queue is
+    # empty (e.g. it was cleared on disconnect and this is a stale token) the call is a harmless no-op.
+    # @param channel [Symbol] Either :tcp or :udp, matching the queue the packet was scheduled on.
+    # @return [Boolean] `true` if a packet was processed, `false` if there was none or it was invalid
+    def process_one_packet(channel = :tcp)
+      queue = channel == :udp ? @udp_incoming_queue : @tcp_incoming_queue
+      packet = queue.pop(true)
+      return false if !packet # nil means the queue was closed and drained (disconnected peer)
+      channel == :udp ? process_udp_packet(packet) : process_tcp_packet(packet)
+    rescue ThreadError # Queue empty but still open: stale token for an already-drained connection
+      false
     end
 
     # Process a new incoming packet and run the corresponding handler
@@ -422,27 +447,6 @@ module ED2K
     rescue RuntimeError => e
       @core.log_debug{ e.message }
       @core.stats[:in_packets_bad] += 1
-      false
-    end
-
-    # Append a received UDP datagram to this connection's incoming UDP queue, to later be processed by the packet thread.
-    # Called by the socket thread after it demultiplexes a datagram to this connection.
-    # @param packet [String] A binary string containing the raw datagram
-    def enqueue_incoming_udp(packet)
-      @udp_incoming_queue.push(packet)
-    end
-
-    # Consumes and processes a single pending packet from one of the incoming queues, corresponding to one scheduling
-    # token popped by the packet thread. The channel (:tcp or :udp) selects the queue and the parser. If the queue is
-    # empty (e.g. it was cleared on disconnect and this is a stale token) the call is a harmless no-op.
-    # @param channel [Symbol] Either :tcp or :udp, matching the queue the packet was scheduled on.
-    # @return [Boolean] `true` if a packet was processed, `false` if there was none or it was invalid
-    def process_one_packet(channel = :tcp)
-      queue = channel == :udp ? @udp_incoming_queue : @tcp_incoming_queue
-      packet = queue.pop(true)
-      return false if !packet # nil means the queue was closed and drained (disconnected peer)
-      channel == :udp ? process_udp_packet(packet) : process_tcp_packet(packet)
-    rescue ThreadError # Queue empty but still open: stale token for an already-drained connection
       false
     end
 

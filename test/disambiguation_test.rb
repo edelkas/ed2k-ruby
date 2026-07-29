@@ -30,7 +30,7 @@ with_core do |core, logs|
   b = core.get_server(ip: '9.9.9.9', port: 4665)
   pending = ->(server){ server.pending_login }
 
-  check(core.get_server(ip: '8.8.8.8', prefer: pending).tcp_address.ip_port == 4661,
+  check(core.get_server(ip: '8.8.8.8', prefer: pending).tcp_port == 4661,
         "a lone server at an IP resolves without needing the hint")
 
   a.pending_login = false

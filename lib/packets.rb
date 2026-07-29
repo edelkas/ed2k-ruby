@@ -89,7 +89,7 @@ module ED2K
     end
 
     # TCP packet sent by servers with their current user and file count.
-    # - Received after logging in (via {Server#send_login}).
+    # - Received after logging in (via {Server#send_login}) and periodically as pings.
     # - Set a handler for these packets with {Core#handle_server_status}.
     class ServerStatus < Packet
 
@@ -160,8 +160,8 @@ module ED2K
       def initialize(message)
         super(OP_EDONKEYPROT, OP_SERVERMESSAGE)
         @message = message
-        @error = false
-        @warning = false
+        @has_error = false
+        @has_warning = false
         @dns = nil
         @message.each_line do |msg|
           if msg.start_with?(/error/i)
@@ -202,11 +202,11 @@ module ED2K
       attr_reader :flags
 
       # Our external IP as reported by the server. Not always present. If it matches our ID then we have High ID.
-      # @return [Integer]
+      # @return [Integer,nil]
       attr_reader :ip
 
       # The port we should use for obfuscated TCP connections with this server. Not always present.
-      # @return [Integer]
+      # @return [Integer,nil]
       attr_reader :obf_tcp_port
 
       # @param id [Integer] Our ID in the server, see {#id}.
@@ -319,6 +319,77 @@ module ED2K
         @name = name
         @description = description
         @tags = tags
+      end
+    end
+
+    # TCP packets sent between clients to exchange information and capabilities when first connecting to each other.
+    # This class actually encompasses two different packets, the "Hello" and the "HelloAnswer", but they're nearly
+    # byte-for-byte identical. They're distinguished by the {#answer} attribute.
+    #
+    # This should be the first packet sent after establishing a successful connection to another peer, as well as to
+    # respond to it if we receive it. These packets are also exchanged between servers and clients during the High ID
+    # flow: the server will attempt to connect to the client and send this packet to determine if the client is reachable.
+    #
+    # @see Connection#send_hello
+    # @see Core#handle_hello
+    class Hello < Packet
+
+      # Whether this packet is a Hello or a HelloAnswer packet. The payloads are nearly identical.
+      # @return [Boolean]
+      attr_reader :answer
+
+      # The client's 16-byte MD4 hash.
+      # @return [String]
+      attr_reader :hash
+
+      # The client's ID. This should be the IP if the ID is 4 bytes; if it's 3 bytes or fewer then it's the client's ID
+      # in the server they're connected to, which is randomly assigned on login and only useful for finding the client in
+      # that server.
+      # @return [Integer]
+      attr_reader :id
+
+      # The TCP port the client is presumably listening to for incoming connections. Doesn't guarantee they're reachable.
+      # @return [Integer]
+      attr_reader :tcp_port
+
+      # The IP address of the server the client is currently connected to, or `0` if not connected.
+      # @return [Integer]
+      attr_reader :server_ip
+
+      # The TCP port of the server the client is currently connected to, or `0` if not connected.
+      # @return [Integer]
+      attr_reader :server_port
+
+      # The client's nickname.
+      # @return [String,nil]
+      attr_reader :name
+
+      # The client's eDonkey protocol version, nowadays always 60 ({EDONKEYVERSION}).
+      # @return [Integer,nil]
+      attr_reader :version
+
+      # @param answer [Boolean] See {#answer}.
+      # @param hash [String] See {#hash}.
+      # @param id [Integer] See {#id}.
+      # @param tcp_port [Integer] See {#tcp_port}.
+      # @param server_ip [Integer] See {#server_ip}.
+      # @param server_port [Integer] See {#server_port}.
+      # @param name [String,nil] See {#name}.
+      # @param version [Integer,nil] See {#version}.
+      def initialize(answer, hash, id, tcp_port, server_ip, server_port, name, version)
+        # This value is derived from the opcode
+        @answer   = answer
+
+        # These values should always be present
+        @hash        = hash
+        @id          = id
+        @tcp_port    = tcp_port
+        @server_ip   = server_ip
+        @server_port = server_port
+
+        # These values are optional, they're sent in a tag list
+        @name     = name
+        @version  = version
       end
     end
 

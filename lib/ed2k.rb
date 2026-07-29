@@ -115,6 +115,9 @@ module ED2K
   # Original operations of the eDonkey protocol, sent with OP_EDONKEYPROT via TCP.
 
 
+  OP_HELLO           = 0x01 # Initial packet after establishing a TCP connection
+  OP_HELLOANSWER     = 0x4C # Nearly identical to the Hello packet
+
   # ------------ CLIENT <-> CLIENT EXTENDED TCP OPCODES
   # Extended operations of the eMule protocol, sent with OP_EMULEPROT or OP_PACKEDPROT via TCP.
 
