@@ -197,7 +197,7 @@ module ED2K
       attr_reader :id
 
       # The server's TCP flags, a bitmask containing supported capabilities.
-      # @see All All the "supports_*" methods.
+      # @see All All the "supports_*" helper methods.
       # @return [Integer]
       attr_reader :flags
 
@@ -230,7 +230,7 @@ module ED2K
       # Whether this server supports sending and receiving compressed packets. It will be done automatically by this gem,
       # unless otherwise specified, provided both server and client support it. This was introduced in eserver 16.40 /
       # eMule0.30b via the packed protocol ({OP_PACKEDPROT}) to save bandwidth, and is typically used for search results
-      # or when we send our shared files list, only when both server and client support it.
+      # or when we send our shared files list, only when both server and client support it. **Currently unsupported**.
       # @return [Boolean]
       def supports_compression
         @flags && @flags & SRV_TCPFLG_COMPRESSION > 0
@@ -254,28 +254,28 @@ module ED2K
       # Whether this server supports searching for related files (the "Related" search in eMule). Introduced in
       # eserver 17.5 / eMule0.46b.
       # @return [Boolean]
-      def supports_related
+      def supports_related_search
         @flags && @flags & SRV_TCPFLG_RELATEDSEARCH > 0
       end
 
-      # Whether this server supports searching for multiple file extensions. This enables the classic search by type
-      # (e.g. "Video") instead of only individual extensions (e.g. "mkv"). Introduced in eserver 17.7.
+      # Whether this server supports searching for file types using integer tags (e.g. audio is 1). Introduced in eserver
+      # 17.6.
       # @return [Boolean]
-      def supports_filetypes
+      def supports_filetype_search
         @flags && @flags & SRV_TCPFLG_TYPETAGINTEGER > 0
       end
 
       # Whether this server supports 64-bit file sizes, and thus files over 4GB. Sizes are nonetheless limited to 256GB,
       # at least on eMule's side. Introduced in eserver 17.8 / emule0.47a.
       # @return [Boolean]
-      def supports_largefiles
+      def supports_large_files
         @flags && @flags & SRV_TCPFLG_LARGEFILES > 0
       end
 
       # Whether this server supports obfuscated TCP packets. Protocol obfuscation was added in eserver 17.13 / eMule0.47b,
-      # see {Obfuscation} for more information.
+      # see {Obfuscation} for more information. **Currently unsupported**.
       # @return [Boolean]
-      def supports_obfuscation
+      def supports_tcp_obfuscation
         @flags && @flags & SRV_TCPFLG_TCPOBFUSCATION > 0
       end
     end

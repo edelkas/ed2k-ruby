@@ -32,7 +32,7 @@ module ED2K
     # @param value [Integer,Float,String] The payload of the tag, its type depends on the tag (`Integer` for integer tags, etc).
     # @return [String] The resulting serialized tag as a binary string.
     # @raise [StandardError] If the supplied value has incorrect type.
-    def self.write(name, value, new = false)
+    def self.write(name, value, new: false)
       # Tag key
       if name.is_a?(Integer)
         key = new ? name.chr : [1, name].pack('S<C') # Length field is always 1

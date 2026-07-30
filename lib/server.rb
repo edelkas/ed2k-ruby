@@ -47,6 +47,65 @@ module ED2K
 
     TIMEOUT_LOGIN = 30 # Maximum time in seconds to wait for a server's answer to our login request
 
+    # The DNS to use to communicate with the server instead of the fixed IP address. Used by servers under dynamic IP
+    # regimes. Advertised in a {Packet::ServerMessage}, rarely seen.
+    # @return [String,nil]
+    attr_reader :dns
+
+    # The server's public name. Advertised in {Packet::ServerIdentification}.
+    # @return [String,nil]
+    attr_reader :name
+
+    # The server's short description. Advertised in {Packet::ServerIdentification}.
+    # @return [String,nil]
+    attr_reader :description
+
+    # The server's identification MD4 hash. This acts as a sort of GUID, and some old servers used it to identify
+    # themselves, but nowadays it's mostly useless. Advertised in {Packet::ServerIdentification}, as well as in
+    # {Packet::Hello} during the High ID flow.
+    # @return [String,nil]
+    attr_reader :hash
+
+    # The version of the eserver software running the server, usually as `MAJOR.MINOR`. The latest official eserver
+    # version is `17.15`, dating from 2006. Custom servers might specify a different one. Advertised as a special
+    # {Packet::ServerMessage} after logging in.
+    # @return [String,nil]
+    attr_reader :version
+
+    # The count of users currently connected to the server. Advertised in {Packet::ServerStatus} periodically.
+    # @return [Integer,nil]
+    attr_reader :users
+
+    # The count of Low ID users currently connected to the server. Currently unsupported, as this is only advertised in
+    # a UDP packet.
+    # @return [nil]
+    attr_reader :low_id
+
+    # Maximum amount of concurrent users supported by the server. Currently unsupported, as this is only advertised in a
+    # UDP packet.
+    # @return [nil]
+    attr_reader :max_users
+
+    # The total file count indexed by the server. Advertised in {Packet::ServerStatus} periodically.
+    # @return [Integer,nil]
+    attr_reader :files
+
+    # The soft file limit determines the maximum number of files a client may share in the server before discarding
+    # the rest. Currently unsupported, as this is only advertised in a UDP packet.
+    # @return [nil]
+    attr_reader :soft_limit
+
+    # The hard file limit determines the maximum number of files a client may share in the server before being kicked
+    # out. Currently unsupported, as this is only advertised in a UDP packet.
+    # @return [nil]
+    attr_reader :hard_limit
+
+    # The TCP flags sent in {Packet::IdChange} after logging in to the server. It's a bitmask containing capabilities
+    # supported by the server, many of which we don't support ourselves yet. You may prefer using the individual
+    # helpers `supports_*` (e.g. {#supports_unicode}).
+    # @return [Integer,nil]
+    attr_reader :tcp_flags
+
     # @param ip [String] The public IPv4 address of the server
     # @param port [Integer] The port the server is listening to for incoming connections
     # @param core [Core] The core object to use when managing this server
@@ -58,24 +117,22 @@ module ED2K
       @tcp_port    = port
       @dns         = nil
 
-      # These properties aren't known until we query the server's status and description
+      # Server status, identification and capabilities. These properties aren't known until receiving certain packets.
       @name        = ''
       @description = ''
       @hash        = ''
       @version     = ''
-      @ping        = -1
-      @files       = -1
-      @max_users   = -1
-      @users       = -1
-      @low_id      = -1
-      @soft_limit  = -1
-      @hard_limit  = -1
+      @files       = 0
+      @max_users   = nil
+      @users       = 0
+      @low_id      = nil
+      @soft_limit  = nil
+      @hard_limit  = nil
       @tcp_flags   = 0
-      @obfuscation = false
 
-      # Whether we're awaiting the server's answer to our login request, and since when (see {#pending_login})
-      @pending_login = false
-      @login_time    = nil
+      # Server state w.r.t. our client
+      @pending_login = false # Are we awaiting an answer for our login request
+      @login_time    = nil   # Since when?
 
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
       #udp_setup()
@@ -171,6 +228,58 @@ module ED2K
     # @return [String] Nick (IP:Port)
     def format_name
       !@name.empty? ? "#{@name} (#{@ip}:#{@tcp_port})" : "#{@ip}:#{@tcp_port}"
+    end
+
+    # Whether this server supports sending and receiving compressed packets. It will be done automatically by this gem,
+    # unless otherwise specified, provided both server and client support it. This was introduced in eserver 16.40 /
+    # eMule0.30b via the packed protocol ({OP_PACKEDPROT}) to save bandwidth, and is typically used for search results
+    # or when we send our shared files list, only when both server and client support it. **Currently unsupported**.
+    # @return [Boolean]
+    def supports_compression
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_COMPRESSION > 0
+    end
+
+    # Whether this server supports new-style tags. This is an internal feature that most users shouldn't concern themselves
+    # with, it will be used automatically by the gem whenever possible. It allows to compress tags in packets, and
+    # was introduced in eserver 16.46 / eMule0.42f. See {Tag} for the technical details.
+    # @return [Boolean]
+    def supports_newtags
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_NEWTAGS > 0
+    end
+
+    # Whether this server supports Unicode strings (for file names, user names, etc). Introduced in eserver 17.1 /
+    # eMule0.44a.
+    # @return [Boolean]
+    def supports_unicode
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_UNICODE > 0
+    end
+
+    # Whether this server supports searching for related files (the "Related" search in eMule). Introduced in
+    # eserver 17.5 / eMule0.46b.
+    # @return [Boolean]
+    def supports_related_search
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_RELATEDSEARCH > 0
+    end
+
+    # Whether this server supports searching for file types using integer tags (e.g. audio is 1). Introduced in eserver
+    # 17.6.
+    # @return [Boolean]
+    def supports_filetype_search
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_TYPETAGINTEGER > 0
+    end
+
+    # Whether this server supports 64-bit file sizes, and thus files over 4GB. Sizes are nonetheless limited to 256GB,
+    # at least on eMule's side. Introduced in eserver 17.8 / emule0.47a.
+    # @return [Boolean]
+    def supports_large_files
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_LARGEFILES > 0
+    end
+
+    # Whether this server supports obfuscated TCP packets. Protocol obfuscation was added in eserver 17.13 / eMule0.47b,
+    # see {Obfuscation} for more information. **Currently unsupported**.
+    # @return [Boolean]
+    def supports_tcp_obfuscation
+      @tcp_flags && @tcp_flags & SRV_TCPFLG_TCPOBFUSCATION > 0
     end
 
     private

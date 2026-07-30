@@ -8,7 +8,7 @@ require_relative 'helper.rb'
 # @param new [Boolean] Whether to use compact Lugdunum new-style tags.
 # @return [Hash] The parsed tags.
 def roundtrip(pairs, new: false)
-  body = pairs.map{ |name, value| ED2K::Tag::write(name, value, new) }.join
+  body = pairs.map{ |name, value| ED2K::Tag::write(name, value, new: new) }.join
   ED2K::Tag::read([pairs.size].pack('L<') + body)
 end
 

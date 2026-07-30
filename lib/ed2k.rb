@@ -190,7 +190,7 @@ module ED2K
   SRV_TCPFLG_NEWTAGS        = 0x0008 # Supports Lugdunum new-style tags (see {Tag.write}) (eserver 16.46 / eMule0.42f)
   SRV_TCPFLG_UNICODE        = 0x0010 # Supports Unicode strings (eserver 17.1 / eMule0.44a)
   SRV_TCPFLG_RELATEDSEARCH  = 0x0040 # Supports searching for related files (eserver 17.5 / eMule0.46b)
-  SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type (eserver 17.7)
+  SRV_TCPFLG_TYPETAGINTEGER = 0x0080 # Supports searching by file type via integer tags (eserver 17.6)
   SRV_TCPFLG_LARGEFILES     = 0x0100 # Suports 64-bit file sizes (4GB to 256GB) (eserver 17.8 / emule0.47a)
   SRV_TCPFLG_TCPOBFUSCATION = 0x0400 # Supports protocol obfuscation via TCP (eserver 17.13 / eMule0.47b)
 
