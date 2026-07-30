@@ -36,6 +36,32 @@ module ED2K
     # to them by requesting a callback through the server.
     attr_reader :id
 
+    # IP address of the server the client is currently connected to, if any. Advertised in {Packet::Hello}.
+    # @return [String,nil]
+    attr_reader :server_ip
+
+    # Listening TCP port of the server the client is currently connected to, if any. Advertised in {Packet::Hello}.
+    # @return [Integer,nil]
+    attr_reader :server_port
+
+    # The server the client is currently connected to, only if we know it. Advertised in {Packet::Hello}.
+    # @return [Server]
+    attr_reader :server
+
+    # The client's 16-byte MD4 hash that identifies them in the ed2k network. Should be unique, but it's generated randomly
+    # by the client software (e.g. eMule) on first launch, so there's collision risk. Advertised in {Packet::Hello}.
+    # @return [String,nil]
+    attr_reader :hash
+
+    # The client's nickname in the ed2k network. Advertised in {Packet::Hello}.
+    # @return [String,nil]
+    attr_reader :name
+
+    # The version of the original eDonkey protocol running in the client's software. Nowadays always 60 ({EDONKEYVERSION}).
+    # Advertised in {Packet::Hello}.
+    # @return [Integer,nil]
+    attr_reader :version
+
     # Pass `socket` to create a client that connected to us. Otherwise, pass `id` and `port`. If known, the `id` should
     # be the `ip`, otherwise it's the client's ID in the server they're connected to (see {#id}).
     # @param id [Integer] The ID of the client (see {#id})
@@ -45,7 +71,6 @@ module ED2K
     def initialize(id: nil, port: nil, socket: nil, core: nil)
       @core = core
       @id   = id
-      @hash = nil
 
       # Connection properties
       @socket      = socket
@@ -53,16 +78,12 @@ module ED2K
       @tcp_port    = port # (don't infer from socket, it's an incoming connection and thus the port is ephemeral)
       @server_ip   = nil
       @server_port = nil
+      @server      = nil
 
       # Other properties
-      @name     = ''
-      @software = ''
-      @version  = -1 # eMule-compatible only
-      @server   = nil
-
-      # Capabilities
-      @supports_obfuscation  = false
-      @supports_secure_ident = false
+      @hash     = nil
+      @name     = nil
+      @version  = nil
 
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
       #udp_setup()
@@ -121,7 +142,7 @@ module ED2K
       if !tags
         @core.log_debug("Failed to parse tags in client hello packet from #{format_name()}")
       else
-        name, version, port = tags[CT_NAME], tags[CT_VERSION], tags[CT_PORT]
+        @name, @version, port = tags[CT_NAME], tags[CT_VERSION], tags[CT_PORT]
         tags.reject!{ |k, v| [CT_NAME, CT_VERSION, CT_PORT].include?(k) }
         if port && port != @tcp_port
           @core.log_debug("Received different ports in hello packet: #{@tcp_port} vs #{port}")
@@ -131,9 +152,9 @@ module ED2K
       @server_ip, @server_port = packet.read(6).unpack('L<S<') if packet.size - packet.pos >= 6
       @core.log_debug(
         "Received hello packet from #{format_name()}: hash=#{@hash.unpack1('H*')}, "\
-        "id=#{@id}, port=#{@tcp_port}, name=#{name}, version=#{version}, more tags=#{tags&.size}"
+        "id=#{@id}, port=#{@tcp_port}, name=#{@name}, version=#{@version}, more tags=#{tags&.size}"
       )
-      Packet::Hello.new(answer, @hash, @id, @tcp_port, @server_ip, @server_port, name, version)
+      Packet::Hello.new(answer, @hash, @id, @tcp_port, @server_ip, @server_port, @name, @version)
     end
 
   end # Client

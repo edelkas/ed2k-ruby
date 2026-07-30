@@ -118,10 +118,10 @@ module ED2K
       @dns         = nil
 
       # Server status, identification and capabilities. These properties aren't known until receiving certain packets.
-      @name        = ''
-      @description = ''
-      @hash        = ''
-      @version     = ''
+      @name        = nil
+      @description = nil
+      @hash        = nil
+      @version     = nil
       @files       = 0
       @max_users   = nil
       @users       = 0
@@ -227,7 +227,7 @@ module ED2K
     # Format the server's name in human-readable form.
     # @return [String] Nick (IP:Port)
     def format_name
-      !@name.empty? ? "#{@name} (#{@ip}:#{@tcp_port})" : "#{@ip}:#{@tcp_port}"
+      @name ? "#{@name} (#{@ip}:#{@tcp_port})" : "#{@ip}:#{@tcp_port}"
     end
 
     # Whether this server supports sending and receiving compressed packets. It will be done automatically by this gem,
