@@ -304,7 +304,6 @@ module ED2K
       @core.wake_socket_thread() if wake
       @core.stats[:out_packets] += 1
       @core.log_debug{ "Sent packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, payload.size, format_name()] }
-      @core.log_trace(payload)
       true
     end
 
@@ -323,7 +322,6 @@ module ED2K
       @pending_udp += 1
       @core.stats[:out_packets] += 1
       @core.log_debug{ "Sent UDP packet %#04x with protocol %#04x of size %d to %s" % [opcode, protocol, size, format_name()] }
-      @core.log_trace(payload)
       true
     end
 

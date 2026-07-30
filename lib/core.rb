@@ -37,7 +37,6 @@ module ED2K
     LOG_LEVEL_NOTICE  = 4         # Relevant messages, usually positive
     LOG_LEVEL_INFO    = 5         # Standard information messages
     LOG_LEVEL_DEBUG   = 6         # Verbose information, such as control packets sent, protocol errors, etc
-    LOG_LEVEL_TRACE   = 7         # Extremely verbose information, such as data dumps
     MAX_SOCKET_QUEUE  = 128       # Max connections with unfinished handshakes (referred to as "half-open" in eMule)
     TCP_READ_SIZE     = 64 * 1024 # Maximum data in bytes to read from each TCP socket per non-blocking call
     TCP_WRITE_SIZE    = 64 * 1024 # Maximum data in bytes to write to each TCP socket per non-blocking call
@@ -49,20 +48,18 @@ module ED2K
     DEFAULT_DOWN_RATE = 0         # Default maximum download rate in bytes per second (0 = unlimited)
     DEFAULT_UP_RATE   = 0         # Default maximum upload rate in bytes per second (0 = unlimited)
 
-    # @param log_level [Integer] The log level for the default logger, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_TRACE}. If you
+    # @param log_level [Integer] The log level for the default logger, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_DEBUG}. If you
     #        have set a custom logger (see {#add_logger}) you may want to disable this by setting it to {LOG_LEVEL_NONE}.
-    # @param log_traces [Boolean] If set to `false`, traces (the most verbose logs) won't even be sent to the loggers.
-    #        This is done to save resources, since generating them could be quite heavy.
     # @param down_rate [Integer] Maximum download rate in bytes per second, aggregated over every peer. `0` is
     #        unlimited, and costs nothing to check. See {#config} to change it on a running core.
     # @param up_rate [Integer] Ditto for the upload rate.
-    def initialize(log_level: LOG_LEVEL_DEBUG, log_traces: false, down_rate: DEFAULT_DOWN_RATE, up_rate: DEFAULT_UP_RATE)
+    def initialize(default_logger: true, log_level: LOG_LEVEL_DEBUG, down_rate: DEFAULT_DOWN_RATE, up_rate: DEFAULT_UP_RATE)
       @init = false
       @servers = {}
       @clients = {}
       @loggers = []
+      @loggers << method(:default_logger) if default_logger
       @log_level = log_level
-      @log_traces = log_traces
       @tcp_socket = nil
       @udp_socket = nil
       @waker_socket = nil # Wakes up socket thread select to send outgoing TCP and UDP packets
@@ -93,7 +90,7 @@ module ED2K
       log_info("Started core")
       true
     rescue => e
-      log_error("Error starting core: #{e}")
+      log_fatal("Error starting core: #{e}")
       stop(true)
       false
     end
@@ -275,7 +272,7 @@ module ED2K
 
     # Add a handler for logging events triggered by the core. You can add multiple handlers.
     # @yieldparam msg [String] The logged message, might contain multiple lines.
-    # @yieldparam level [Integer] The level / severity of the message, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_TRACE}.
+    # @yieldparam level [Integer] The level / severity of the message, from {LOG_LEVEL_FATAL} to {LOG_LEVEL_DEBUG}.
     # @return [Proc] The resulting handler
     def add_logger(&logger)
       @loggers << logger
@@ -490,14 +487,6 @@ module ED2K
     end
 
     # @private
-    def log_trace(msg = nil)
-      return unless @log_traces
-      msg = yield if block_given?
-      msg = ED2K::serialize(msg) if msg.encoding.to_s == "ASCII-8BIT"
-      log(msg, LOG_LEVEL_TRACE)
-    end
-
-    # @private
     def run_tcp_handler(protocol, opcode, peer, data)
       @tcp_handlers&.[](protocol)&.[](opcode)&.call(peer, data)
     end
@@ -545,19 +534,20 @@ module ED2K
 
     private
 
+    # Default logger, outputs to STDOUT with timestamps and color coding.
+    def default_logger(msg, level)
+      color = "\e[%dm" % [41, 31, 33, 34, 0, 35][level - 1]
+      now = Time.now.strftime('%F %T.%L')
+      puts color + msg.each_line.map{ |line| "[#{now}] #{line.strip}" }.join("\n") + "\e[0m"
+    end
+
     # Add a message to the log of this core. The message may be supplied as a block instead of a string, in which case
     # it's only built when something is actually going to consume it. This matters on the hot paths.
     # TODO: Move the standard logger to a sort of "default logger", and also print all lines at once!
     def log(msg = nil, level = LOG_LEVEL_INFO)
-      return if block_given? && level > @log_level && @loggers.empty?
+      return if level > @log_level
       msg = yield if block_given?
       @loggers.each{ |logger| logger.call(msg, level) }
-      return if level > @log_level
-      prefix = "\x1B[%dm" % [41, 31, 33, 34, 0, 35, 90][level - 1]
-      suffix = "\x1B[0m"
-      msg.each_line(chomp: true){ |line|
-        puts "%s[%s] %s%s" % [prefix, Time.now.strftime('%F %T.%L'), line, suffix]
-      }
     end
 
     # Socket thread permanently monitors sockets for R/W activity
