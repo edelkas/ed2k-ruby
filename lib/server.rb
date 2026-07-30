@@ -111,6 +111,8 @@ module ED2K
     # @param core [Core] The core object to use when managing this server
     def initialize(ip, port, core: nil)
       @core = core
+      @ready_tcp = false
+      @ready_udp = false
 
       # Basic properties we need to establish a connection or send packets
       @ip          = ip

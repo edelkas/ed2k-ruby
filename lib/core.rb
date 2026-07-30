@@ -123,16 +123,13 @@ module ED2K
 
     # Establish a connection with a given server or client.
     # @param conn [Connection] The {Server} or {Client} instance.
-    # @return [Boolean] Whether the connection could be established.
-    def connect(conn)
-      wait = TIMEOUT_CONNECT
-      freq = 0.25
-      while (status = conn.connect).nil? && wait > 0
-        sleep(freq)
-        wait -= freq
-      end
-      log_warning("Connection to #{conn.format_name()} timed out") if status.nil?
-      return false if !status
+    # @param block [Boolean] Whether to attempt the connection in a blocking way. This blocks the thread until the
+    # connection succeeds or fails, otherwise the connection gets launched and the thread is released immediately.
+    # @return [Boolean,nil] Whether the connection could be established. If `nil` the connection is being established
+    # in the background because `block` was set to `false`, you should call this again later until you receive a boolean.
+    def connect(conn, block = true)
+      status = conn.connect
+      return status if !status
       add_connection(conn)
       true
     end
@@ -532,6 +529,15 @@ module ED2K
       # Waker is closed or broken, the socket thread will still notice the work after the select timeout
     end
 
+    # @private
+    # Add a message to the log of this core. The message may be supplied as a block instead of a string, in which case
+    # it's only built when something is actually going to consume it. This matters on the hot paths.
+    def log(msg = nil, level = LOG_LEVEL_INFO)
+      return if level > @log_level
+      msg = yield if block_given?
+      @loggers.each{ |logger| logger.call(msg, level) }
+    end
+
     private
 
     # Default logger, outputs to STDOUT with timestamps and color coding.
@@ -539,15 +545,6 @@ module ED2K
       color = "\e[%dm" % [41, 31, 33, 34, 0, 35][level - 1]
       now = Time.now.strftime('%F %T.%L')
       puts color + msg.each_line.map{ |line| "[#{now}] #{line.strip}" }.join("\n") + "\e[0m"
-    end
-
-    # Add a message to the log of this core. The message may be supplied as a block instead of a string, in which case
-    # it's only built when something is actually going to consume it. This matters on the hot paths.
-    # TODO: Move the standard logger to a sort of "default logger", and also print all lines at once!
-    def log(msg = nil, level = LOG_LEVEL_INFO)
-      return if level > @log_level
-      msg = yield if block_given?
-      @loggers.each{ |logger| logger.call(msg, level) }
     end
 
     # Socket thread permanently monitors sockets for R/W activity

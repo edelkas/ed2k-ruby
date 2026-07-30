@@ -71,6 +71,8 @@ module ED2K
     def initialize(id: nil, port: nil, socket: nil, core: nil)
       @core = core
       @id   = id
+      @ready_tcp = false
+      @ready_udp = false
 
       # Connection properties
       @socket      = socket

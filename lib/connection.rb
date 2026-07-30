@@ -38,6 +38,33 @@ module ED2K
     # @return [Core]
     attr_reader :core
 
+    # Whether this peer is ready to exchange TCP packets. This involves having a successful TCP connection established.
+    # @note For **servers** you still have to log in (see {Server#send_login}) before being able to perform any other
+    # operation. Similarly, for **clients** you still have to exchange hello packets (see {Client#send_hello}). You are
+    # responsible for keeping track of this state.
+    # @return [Boolean]
+    attr_reader :ready_tcp
+
+    # Whether this peer is ready to exchange UDP packets. Unlike TCP, this only involves having the address (IP and UDP port).
+    # @return [Boolean]
+    attr_reader :ready_udp
+
+    # Whether this connection corresponds to a {Server}.
+    # @note Servers will connect to us **as clients** after logging in to determine whether we're reachable or not. This
+    # needs to be handled as a regular client connection, and is thus followed by exchanging {Packet::Hello}, so this
+    # function will return `false` for those short-lived connections (not for the one we initiated).
+    # @return [Boolean]
+    def is_server?
+      self.is_a?(ED2K::Server)
+    end
+
+    # Whether this connection corresponds to a {Client}.
+    # @note (see {#is_server?})
+    # @return [Boolean]
+    def is_client?
+      self.is_a?(ED2K::Client)
+    end
+
     # Initialize the UDP-related resources of this connection. Unlike {#tcp_setup}, which prepares the per-connection TCP
     # socket and is called when a TCP connection is established, this is called once at construction because UDP traffic
     # (e.g. global server queries) can happen without ever establishing a TCP connection. There are no partial-data
@@ -47,6 +74,7 @@ module ED2K
       @udp_outgoing_queue = Queue.new
       @udp_port = @tcp_port ? @tcp_port + 4 : nil
       @pending_udp = 0
+      @ready_udp = !!@udp_port
     end
 
     # How many UDP queries we've sent to this peer that haven't been answered yet. Peers essentially only send us
@@ -84,37 +112,53 @@ module ED2K
       @tcp_incoming_queue = Queue.new
       @control_queue  = Queue.new
       @standard_queue = Queue.new
-
-      @ready = true
     end
 
-    # Attempt to establish a TCP connection in a non-blocking way. May be recalled multiple times until we manage to
-    # get a connection. Should only be called when we're the ones initiating the connection.
+    # Attempt to establish a TCP connection with this server or client. This method should only be called when we're the
+    # ones initiating the connection.
+    # @param block [Boolean] Whether the connection should be attempted in a blocking or non-blocking way. In the latter
+    # case, the function may be recalled multiple times until it returns `true`.
     # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
     # @todo This method DOESN'T add the connection to the set monitored by the core. FIX!
     #       Maybe most of these methods should be private.
-    def connect
+    def connect(block = true)
+      lvl_inf = is_server?() ? Core::LOG_LEVEL_INFO : Core::LOG_LEVEL_DEBUG
+      lvl_err = is_server?() ? Core::LOG_LEVEL_ERROR : Core::LOG_LEVEL_DEBUG
       if !@ip || !@tcp_port
         @core.log_error("Can't connect to #{format_name()}, missing IP address or TCP port")
         return false
       end
-      tcp_setup()
       if !@socket || @socket.closed?
-        @core.log_debug("Connecting to #{format_name()}...")
+        @core.log("Connecting to #{format_name()}...", lvl_inf)
         @socket = Socket.new(:INET, :STREAM)
       end
-      @socket.connect_nonblock(Socket.sockaddr_in(@tcp_port, @ip)) == 0
+      sockaddr = Socket.sockaddr_in(@tcp_port, @ip)
+      return @socket.connect_nonblock(sockaddr) == 0 if !block
+      @socket.connect(sockaddr)
+      @core.log("Connected to #{format_name()}", lvl_inf)
+      tcp_setup()
+      @ready_tcp = true
     rescue Errno::EISCONN
-      @core.log_debug("Connected to #{format_name()}")
-      true   # We are connected
+      # We are connected
+      if !@ready_tcp
+        @core.log("Connected to #{format_name()}", lvl_inf)
+        tcp_setup()
+        @ready_tcp = true
+      end
+      true
     rescue Errno::EINPROGRESS, Errno::EALREADY, Errno::EWOULDBLOCK
-      nil    # Connection in progress
+      # Connection in progress
+      nil
     rescue Errno::ECONNREFUSED
-      @core.log_debug("Failed to connect to #{format_name()}")
-      false  # The host is unreachable
+      # The host is unreachable
+      @core.log("Failed to connect to #{format_name()}", lvl_err)
+      disconnect()
+      false
     rescue
-      @core.log_debug("Unknown error connecting to #{format_name()}")
-      false  # Some other connection error
+      # Some other connection error
+      @core.log("Unknown error connecting to #{format_name()}", lvl_err)
+      disconnect()
+      false
     end
 
     # Close the underlying socket and free all the resources (system socket, internal R/W buffers, packet queues...)
@@ -128,8 +172,10 @@ module ED2K
 
       # Close underlying connection
       @core.log_debug("Disconnected from #{format_name()}")
-      @socket.close
+      @socket.close if @socket
       @socket = nil
+
+      @ready_tcp = false
     end
 
     # Whether we can read from the socket. In that case, we always monitor it.
@@ -157,7 +203,7 @@ module ED2K
     # @param clear [Boolean] If `true` then the read buffer and queue is cleared, otherwise they're kept.
     def close_for_reading(clear = false)
       @readable = false
-      @socket.shutdown(Socket::SHUT_RD)
+      @socket.shutdown(Socket::SHUT_RD) if @socket
       return if !clear
       @read_buffer.clear
       @tcp_incoming_queue.clear
@@ -169,7 +215,7 @@ module ED2K
     # the outgoing packet queues, anything in there not sent is discarded.
     def close_for_writing
       @writable = false
-      @socket.shutdown(Socket::SHUT_WR)
+      @socket.shutdown(Socket::SHUT_WR) if @socket
       @write_buffer.clear
       @standard_queue.clear
       @control_queue.clear
@@ -298,6 +344,7 @@ module ED2K
     #        to flush a lone data packet promptly or to queue a batch of control packets and wake once at the end.
     # @return [Boolean] Whether the packet was successfully queued in the corresponding packet queue or not.
     def queue_tcp_packet(protocol, opcode, payload = '', control = true, wake: control)
+      return false if !@ready_tcp
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
       queue.push(payload.prepend([protocol, payload.size + 1, opcode].pack('CL<C')))
@@ -315,7 +362,7 @@ module ED2K
     # @param payload [String] A (usually binary) string with the opcode-specific payload of the packet.
     # @return [Boolean] Whether the packet was successfully queued for sending or not.
     def queue_udp_packet(protocol, opcode, payload = '')
-      return false if !@udp_port
+      return false if !@ready_udp
       size = payload.size
       @udp_outgoing_queue.push(payload.prepend([protocol, opcode].pack('CC')))
       @core.schedule_udp_send(self)
