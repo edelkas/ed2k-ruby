@@ -128,7 +128,7 @@ module ED2K
     # @return [Boolean,nil] Whether the connection could be established. If `nil` the connection is being established
     # in the background because `block` was set to `false`, you should call this again later until you receive a boolean.
     def connect(conn, block = true)
-      status = conn.connect
+      status = conn.connect(timeout: TIMEOUT_CONNECT)
       return status if !status
       add_connection(conn)
       true
@@ -547,86 +547,99 @@ module ED2K
       puts color + msg.each_line.map{ |line| "[#{now}] #{line.strip}" }.join("\n") + "\e[0m"
     end
 
-    # Socket thread permanently monitors sockets for R/W activity
-    # @todo THIS IS NOT ROBUST! A single exception nukes the entire thread.
+    # Socket thread permanently monitors sockets for R/W activity. Each cycle is wrapped so that an unexpected exception
+    # (a bug, an unforeseen socket error the per-connection read/write rescues don't cover, ...) only aborts that one
+    # cycle and gets logged, instead of killing the thread and freezing the whole I/O pipeline.
     def run_socket_thread
       while @thSockRun
-        # Block until next socket activity
-        to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
-        to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
+        begin
+          # Block until next socket activity
+          to_read  = @connections.values.select(&:ready_for_reading).map(&:socket)
+          to_write = @connections.values.select(&:ready_for_writing).map(&:socket)
 
-        # When the rate limit has run out we stop monitoring the peer sockets, sleep minimally until it recovers.
-        # This allows to keep the achieved rate at the limit rather than below it.
-        # Leaving them in the select set only to decline transfer later would instead would busy-loop the thread.
-        read_wait  = @down_bucket.wait_time
-        write_wait = @up_bucket.wait_time
-        to_read.clear  if read_wait > 0
-        to_write.clear if write_wait > 0
+          # When the rate limit has run out we stop monitoring the peer sockets, sleep minimally until it recovers.
+          # This allows to keep the achieved rate at the limit rather than below it.
+          # Leaving them in the select set only to decline transfer later would instead would busy-loop the thread.
+          read_wait  = @down_bucket.wait_time
+          write_wait = @up_bucket.wait_time
+          to_read.clear  if read_wait > 0
+          to_write.clear if write_wait > 0
 
-        # Always monitor control sockets for new activity. Add UDP socket if available.
-        to_read.push(@tcp_socket, @waker_socket)
-        if @udp_socket
-          to_read.push(@udp_socket)
-          to_write.push(@udp_socket) if !@write_ready.empty?
+          # Always monitor control sockets for new activity. Add UDP socket if available.
+          to_read.push(@tcp_socket, @waker_socket)
+          if @udp_socket
+            to_read.push(@udp_socket)
+            to_write.push(@udp_socket) if !@write_ready.empty?
+          end
+
+          timeout = TIMEOUT_WAIT
+          timeout = read_wait  if read_wait  > 0 && read_wait  < timeout
+          timeout = write_wait if write_wait > 0 && write_wait < timeout
+          readable, writable = IO.select(to_read, to_write, [], timeout)
+
+          # Ditch dead sockets
+          @connections.each do |fileno, conn|
+            disconnect(conn) if !conn.alive?
+          end
+
+          # Read from sockets, fixed budget per socket so fast sockets don't starve the bandwidth
+          readable.each do |socket|
+            # New incoming connection, accept it
+            next new_connection(socket.accept.first) if socket == @tcp_socket
+
+            # Waker signal, drain it (its only purpose was to interrupt the select)
+            next drain_waker() if socket == @waker_socket
+
+            # Incoming UDP datagrams on the shared UDP socket, demux and route them by sender
+            next receive_udp() if socket == @udp_socket
+
+            # Server or client activity, read as much as both the per socket budget and the rate limit allow. Peers are
+            # served in turn until the allowance runs out, so whatever is left of it always goes to someone who can use
+            # it, and the limit is reached as long as the peers can collectively supply it.
+            connection = @connections[socket.fileno]
+            grant = @down_bucket.take(TCP_READ_SIZE)
+            next if grant == 0
+            read = connection.read(grant)
+            @down_bucket.refund(grant - [read, 0].max) # The peer may have had less to give than we allowed for
+          end if readable&.any?
+
+          # Write to sockets, sending at most one budget's worth to each one, for the same fairness reasons as above
+          writable.each do |socket|
+            # Pending outgoing UDP datagrams on the shared UDP socket, send them for whichever connections queued them
+            next send_udp() if socket == @udp_socket
+
+            # Send pending TCP packets, metered the same way as reads
+            connection = @connections[socket.fileno]
+            grant = @up_bucket.take(TCP_WRITE_SIZE)
+            next if grant == 0
+            written = connection.write(grant)
+            @up_bucket.refund(grant - [written, 0].max) # We may have had less to send than we allowed for
+          end if writable&.any?
+        rescue => e
+          # Never let a single bad cycle take the thread down; log it and move on to the next one.
+          log_error("Socket thread error, skipping cycle: #{e.class}: #{e.message}")
+          log_debug{ e.backtrace&.join("\n") }
         end
-
-        timeout = TIMEOUT_WAIT
-        timeout = read_wait  if read_wait  > 0 && read_wait  < timeout
-        timeout = write_wait if write_wait > 0 && write_wait < timeout
-        readable, writable = IO.select(to_read, to_write, [], timeout)
-
-        # Ditch dead sockets
-        @connections.each do |fileno, conn|
-          disconnect(conn) if !conn.alive?
-        end
-
-        # Read from sockets, fixed budget per socket so fast sockets don't starve the bandwidth
-        readable.each do |socket|
-          # New incoming connection, accept it
-          next new_connection(socket.accept.first) if socket == @tcp_socket
-
-          # Waker signal, drain it (its only purpose was to interrupt the select)
-          next drain_waker() if socket == @waker_socket
-
-          # Incoming UDP datagrams on the shared UDP socket, demux and route them by sender
-          next receive_udp() if socket == @udp_socket
-
-          # Server or client activity, read as much as both the per socket budget and the rate limit allow. Peers are
-          # served in turn until the allowance runs out, so whatever is left of it always goes to someone who can use
-          # it, and the limit is reached as long as the peers can collectively supply it.
-          connection = @connections[socket.fileno]
-          grant = @down_bucket.take(TCP_READ_SIZE)
-          next if grant == 0
-          read = connection.read(grant)
-          @down_bucket.refund(grant - [read, 0].max) # The peer may have had less to give than we allowed for
-        end if readable&.any?
-
-        # Write to sockets, sending at most one budget's worth to each one, for the same fairness reasons as above
-        writable.each do |socket|
-          # Pending outgoing UDP datagrams on the shared UDP socket, send them for whichever connections queued them
-          next send_udp() if socket == @udp_socket
-
-          # Send pending TCP packets, metered the same way as reads
-          connection = @connections[socket.fileno]
-          grant = @up_bucket.take(TCP_WRITE_SIZE)
-          next if grant == 0
-          written = connection.write(grant)
-          @up_bucket.refund(grant - [written, 0].max) # We may have had less to send than we allowed for
-        end if writable&.any?
       end
     end
 
     # Packet thread monitors the ready queue for connections with new received packets to parse and process. Each entry
     # in the ready queue is a scheduling token, a [connection, channel, count] triple (channel is :tcp or :udp), so we
     # process exactly as many packets as the token accounts for. The blocking pop means the thread consumes no resources
-    # while idle.
-    # @todo THIS IS NOT ROBUST! A single exception nukes the entire thread.
+    # while idle. As with the socket thread, each token is processed inside a rescue so that one packet that fails to
+    # parse or whose handler raises only drops that token and gets logged, rather than tearing the thread down and
+    # halting all packet processing.
     def run_packet_thread
       while @thPackRun
-        token = @parse_ready.pop
-        next if token.nil? # Sentinel pushed on shutdown (or spurious), re-check the run flag
-        conn, channel, count = token
-        count.times{ conn.process_one_packet(channel) }
+        begin
+          token = @parse_ready.pop
+          next if token.nil? # Sentinel pushed on shutdown (or spurious), re-check the run flag
+          conn, channel, count = token
+          count.times{ conn.process_one_packet(channel) }
+        rescue => e
+          log_error("Packet thread error, skipping token: #{e.class}: #{e.message}")
+          log_debug{ e.backtrace&.join("\n") }
+        end
       end
     end
 

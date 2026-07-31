@@ -135,6 +135,7 @@ module ED2K
       # Server state w.r.t. our client
       @pending_login = false # Are we awaiting an answer for our login request
       @login_time    = nil   # Since when?
+      @logged        = false # Logged in
 
       # UDP resources (incoming queue, UDP address), independent of any TCP connection
       #udp_setup()
@@ -205,6 +206,7 @@ module ED2K
 
     # Request the list of known servers to this server.
     def send_server_list_request
+      assert_logged()
       queue_tcp_packet(OP_EDONKEYPROT, OP_GETSERVERLIST)
       @core.log_debug("Sent server list request to #{format_name()}")
     end
@@ -285,6 +287,11 @@ module ED2K
     end
 
     private
+
+    # Ensure we're logged in before sending packets (other than the login packet itself)
+    def assert_logged
+      raise "Cannot send this packet to #{format_name()} yet, not logged in!" if !@logged
+    end
 
     # Mark whether we're awaiting an answer to our login request, starting the countdown to {TIMEOUT_LOGIN} when we are.
     def pending_login=(pending)
@@ -386,6 +393,7 @@ module ED2K
       self.pending_login = false # The ID assignment is the answer to our login request
       @core.log_info("Received new ID from #{format_name()}: #{id}")
       @core.log_debug("Received ID change packet: id=#{id}, flags=#{flags}, ip=#{ED2K::unpack_ip(ip || 0)}, obfTCPport=#{obfuscated_tcp_port}")
+      @logged = true
       Packet::IdChange.new(id, flags, ip, obfuscated_tcp_port)
     end
 

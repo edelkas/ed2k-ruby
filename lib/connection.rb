@@ -116,12 +116,16 @@ module ED2K
 
     # Attempt to establish a TCP connection with this server or client. This method should only be called when we're the
     # ones initiating the connection.
+    # @note Do **not** call this method directly, use {Core#connect}. Otherwise, the core won't monitor the socket!
     # @param block [Boolean] Whether the connection should be attempted in a blocking or non-blocking way. In the latter
     # case, the function may be recalled multiple times until it returns `true`.
+    # @param timeout [Float,Integer,nil] For blocking connections, the maximum number of seconds to wait before giving up
+    # (returning `false`). `nil`, the default, waits indefinitely. Ignored for non-blocking connections.
     # @return [Boolean,nil] `true` if we're connected, `nil` if we're connecting, `false` if we failed to connect.
     # @todo This method DOESN'T add the connection to the set monitored by the core. FIX!
     #       Maybe most of these methods should be private.
-    def connect(block = true)
+    def connect(block = true, timeout: nil)
+      # Ensure resouces (IP, TCP port, socket)
       lvl_inf = is_server?() ? Core::LOG_LEVEL_INFO : Core::LOG_LEVEL_DEBUG
       lvl_err = is_server?() ? Core::LOG_LEVEL_ERROR : Core::LOG_LEVEL_DEBUG
       if !@ip || !@tcp_port
@@ -133,8 +137,35 @@ module ED2K
         @socket = Socket.new(:INET, :STREAM)
       end
       sockaddr = Socket.sockaddr_in(@tcp_port, @ip)
+
+      # Non-blocking connect
       return @socket.connect_nonblock(sockaddr) == 0 if !block
-      @socket.connect(sockaddr)
+
+      # Blocking connect, w/ and w/o timeout
+      if timeout
+        begin
+          @socket.connect_nonblock(sockaddr)
+        rescue IO::WaitWritable
+          # Connection underway: wait until the socket settles or 'timeout' seconds elapse. The socket goes into the
+          # error set on failure (which is how Windows reports it, rather than as writable), so we pass it there too.
+          unless IO.select(nil, [@socket], [@socket], timeout)
+            @core.log("Timed out connecting to #{format_name()}", lvl_err)
+            discard_socket()
+            return false
+          end
+          # The attempt finished. SO_ERROR is 0 on success or the connect() error otherwise; reading it is portable,
+          # unlike re-issuing connect_nonblock, which loops forever on a failed connect on Windows.
+          if @socket.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int != 0
+            @core.log("Failed to connect to #{format_name()}", lvl_err)
+            discard_socket()
+            return false
+          end
+        end
+      else
+        @socket.connect(sockaddr)
+      end
+
+      # Connected successfully
       @core.log("Connected to #{format_name()}", lvl_inf)
       tcp_setup()
       @ready_tcp = true
@@ -152,12 +183,12 @@ module ED2K
     rescue Errno::ECONNREFUSED
       # The host is unreachable
       @core.log("Failed to connect to #{format_name()}", lvl_err)
-      disconnect()
+      discard_socket()
       false
     rescue
       # Some other connection error
       @core.log("Unknown error connecting to #{format_name()}", lvl_err)
-      disconnect()
+      discard_socket()
       false
     end
 
@@ -175,6 +206,16 @@ module ED2K
       @socket.close if @socket
       @socket = nil
 
+      @ready_tcp = false
+    end
+
+    # Discard a socket whose connection attempt never succeeded. Unlike {#disconnect}, this doesn't shut the socket
+    # down or clear the R/W buffers and packet queues: none of those exist yet, since {#tcp_setup} only runs once a
+    # connection is established. In particular, `shutdown` is skipped on purpose, as it raises `Errno::ENOTCONN` on a
+    # socket that was never connected. This just closes the raw socket and marks us disconnected.
+    def discard_socket
+      @socket.close if @socket && !@socket.closed?
+      @socket = nil
       @ready_tcp = false
     end
 
@@ -259,7 +300,10 @@ module ED2K
       else
         @core.log_debug("Connection was lost while writing to #{format_name()}")
       end
+      # The peer is gone, so tear down both ends rather than only the write side, letting the socket thread's alive?
+      # reaper fully disconnect once any received packets are processed (see the matching branch in #read).
       close_for_writing()
+      close_for_reading()
       sent == 0 ? -1 : sent
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
       sent == 0 ? -1 : sent
@@ -317,7 +361,12 @@ module ED2K
       else
         @core.log_debug("EOF received from #{format_name()}")
       end
+      # An EOF from an ed2k peer means they closed the whole socket (the protocol never half-closes), so tear down
+      # both ends. Keeping only the read side closed would leave the connection writable, monitored and flagged as
+      # ready forever, since alive? stays true while @writable is. Closing both lets the socket thread's alive? reaper
+      # fully disconnect it once the already-received packets have been processed.
       close_for_reading()
+      close_for_writing()
       -1
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
       if self.is_a?(ED2K::Server)
@@ -325,7 +374,8 @@ module ED2K
       else
         @core.log_debug("Connection was lost while reading from #{format_name()}")
       end
-      close_for_reading()
+      close_for_reading()                  # A reset kills the whole socket, so drop both ends (see the EOF branch)
+      close_for_writing()
       -1
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
       -1
@@ -342,11 +392,20 @@ module ED2K
     #        up while only the first one does anything useful, and the transfer is already running steadily enough for
     #        the socket thread to pick them up on its own. Defaults accordingly, but can be overridden either way, e.g.
     #        to flush a lone data packet promptly or to queue a batch of control packets and wake once at the end.
+    # @param stop [Boolean] If `true`, the method will raise an exception when the TCP connection is not properly
+    #   established yet. If `false` it'll simply return false.
     # @return [Boolean] Whether the packet was successfully queued in the corresponding packet queue or not.
-    def queue_tcp_packet(protocol, opcode, payload = '', control = true, wake: control)
-      return false if !@ready_tcp
+    # @raise [StandardError] If the TCP connection isn't properly established.
+    def queue_tcp_packet(protocol, opcode, payload = '', control = true, wake: control, stop: true)
+      # Ensure connection is ready and resources are available
+      if !@ready_tcp
+        return false unless stop
+        raise "Cannot queue TCP packet, TCP connection not ready, did you connect?"
+      end
       queue = control ? @control_queue : @standard_queue
       return false if queue.closed?
+
+      # Serialize packet, notify socket thread and log
       queue.push(payload.prepend([protocol, payload.size + 1, opcode].pack('CL<C')))
       @core.wake_socket_thread() if wake
       @core.stats[:out_packets] += 1
