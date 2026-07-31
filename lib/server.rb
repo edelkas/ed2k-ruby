@@ -63,8 +63,10 @@ module ED2K
     # The server's identification MD4 hash. This acts as a sort of GUID, and some old servers used it to identify
     # themselves, but nowadays it's mostly useless. Advertised in {Packet::ServerIdentification}, as well as in
     # {Packet::Hello} during the High ID flow.
+    # @note Named `md4` rather than `hash` on purpose: a `hash` reader would shadow `Object#hash` and break using
+    #       servers as Hash keys or Set members.
     # @return [String,nil]
-    attr_reader :hash
+    def md4 = @hash
 
     # The version of the eserver software running the server, usually as `MAJOR.MINOR`. The latest official eserver
     # version is `17.15`, dating from 2006. Custom servers might specify a different one. Advertised as a special

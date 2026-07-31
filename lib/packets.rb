@@ -288,8 +288,9 @@ module ED2K
       # The server's MD4 hash. This seems to act as a sort of GUID, but it's completely unused. The only known usage is
       # to detect servers running the eFarm software (an obsolete eserver alternative dating from 2003), which would
       # have a hash of 0x2A2A2A2A.
+      # @note Named `md4` rather than `hash` so it doesn't shadow `Object#hash`.
       # @return [String]
-      attr_reader :hash
+      def md4 = @hash
 
       # The server's public IP address. Since this packet is sent in response to us, we already know this.
       # @return [Integer]
@@ -339,8 +340,9 @@ module ED2K
       attr_reader :answer
 
       # The client's 16-byte MD4 hash.
+      # @note Named `md4` rather than `hash` so it doesn't shadow `Object#hash`.
       # @return [String]
-      attr_reader :hash
+      def md4 = @hash
 
       # The client's ID. This should be the IP if the ID is 4 bytes; if it's 3 bytes or fewer then it's the client's ID
       # in the server they're connected to, which is randomly assigned on login and only useful for finding the client in

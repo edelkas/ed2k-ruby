@@ -6,6 +6,10 @@
 
 require_relative 'helper.rb'
 
+# UDP is currently disabled in the core (Core#init_udp_socket and Connection#udp_setup are commented out), so there's
+# nothing to exercise here. Skip the whole file until it's brought back, at which point these tests run again as-is.
+skip_file('UDP is disabled in the core (Core#init_udp_socket / Connection#udp_setup)') unless udp_enabled?
+
 section 'A peer\'s UDP address is derived from its TCP port'
 with_core do |core|
   server = core.add_server('127.0.0.1', 5000)

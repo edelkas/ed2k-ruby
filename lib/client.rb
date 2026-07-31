@@ -34,6 +34,7 @@ module ED2K
     # to its IPv4 address, and this should indicate that the client is reachable and we can establish a connection
     # directly. If it's at most 3 bytes then it's a random identifier assigned by the server, and we can only connect
     # to them by requesting a callback through the server.
+    # @return [Integer,nil]
     attr_reader :id
 
     # IP address of the server the client is currently connected to, if any. Advertised in {Packet::Hello}.
@@ -50,8 +51,10 @@ module ED2K
 
     # The client's 16-byte MD4 hash that identifies them in the ed2k network. Should be unique, but it's generated randomly
     # by the client software (e.g. eMule) on first launch, so there's collision risk. Advertised in {Packet::Hello}.
+    # @note Named `md4` rather than `hash` on purpose: a `hash` reader would shadow `Object#hash` and break using
+    #       clients as Hash keys or Set members.
     # @return [String,nil]
-    attr_reader :hash
+    def md4 = @hash
 
     # The client's nickname in the ed2k network. Advertised in {Packet::Hello}.
     # @return [String,nil]
@@ -70,7 +73,7 @@ module ED2K
     # @param core [Core] The core object to use when managing this client
     def initialize(id: nil, port: nil, socket: nil, core: nil)
       @core = core
-      @id   = id
+      @id   = id.is_a?(String) ? ED2K.pack_ip(id) : id
       @ready_tcp = false
       @ready_udp = false
 

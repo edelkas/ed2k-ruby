@@ -14,21 +14,24 @@ with_core do |core|
   [a, b].each(&:tcp_setup)
 
   processed = { a => [], b => [] }
-  done = Queue.new
-  [[a, 'a'], [b, 'b']].each do |server, tag|
-    server.define_singleton_method(:parse_edonkey_udp_packet) do |opcode, payload|
+  [a, b].each do |server|
+    server.define_singleton_method(:parse_edonkey_tcp_packet) do |opcode, payload|
       processed[self] << payload.dup
-      done.push(true)
       payload
     end
   end
 
+  # Push straight into each peer's incoming TCP queue and schedule a token per packet, exactly as the socket thread
+  # does after reading them off the wire. Uses TCP because UDP is currently disabled; the ready queue works the same.
+  enqueue = ->(server, payload) do
+    server.instance_variable_get(:@tcp_incoming_queue).push(payload)
+    core.schedule_packet(server, :tcp)
+  end
+
   count = 50
   count.times do |i|
-    a.enqueue_incoming_udp(udp_packet(0x01, "a#{i}"))
-    core.schedule_packet(a, :udp)
-    b.enqueue_incoming_udp(udp_packet(0x01, "b#{i}"))
-    core.schedule_packet(b, :udp)
+    enqueue.call(a, tcp_packet(0x01, "a#{i}"))
+    enqueue.call(b, tcp_packet(0x01, "b#{i}"))
   end
 
   drained = wait_for(timeout: 10){ processed[a].size + processed[b].size == count * 2 }
@@ -45,13 +48,13 @@ with_core do |core|
   server = core.add_server('127.0.0.1', 4661)
   server.tcp_setup
   attempts = Queue.new
-  server.define_singleton_method(:parse_edonkey_udp_packet){ |op, pl| attempts.push(pl); pl }
+  server.define_singleton_method(:parse_edonkey_tcp_packet){ |op, pl| attempts.push(pl); pl }
 
-  queue = server.instance_variable_get(:@udp_incoming_queue)
-  server.enqueue_incoming_udp(udp_packet(0x01, 'gone'))
+  queue = server.instance_variable_get(:@tcp_incoming_queue)
+  queue.push(tcp_packet(0x01, 'gone'))
   queue.clear
   queue.close
-  core.schedule_packet(server, :udp) # Stale token, its packet no longer exists
+  core.schedule_packet(server, :tcp) # Stale token, its packet no longer exists
 
   sleep 0.4
   check(core.instance_variable_get(:@thPack).alive?, "the packet thread survives the stale token")
@@ -63,17 +66,17 @@ with_core do |core|
   server = core.add_server('127.0.0.1', 4661)
   server.tcp_setup
   attempts = Queue.new
-  server.define_singleton_method(:parse_edonkey_udp_packet){ |op, pl| attempts.push(pl); pl }
+  server.define_singleton_method(:parse_edonkey_tcp_packet){ |op, pl| attempts.push(pl); pl }
 
-  core.schedule_packet(server, :udp) # A token with no packet behind it at all
+  core.schedule_packet(server, :tcp) # A token with no packet behind it at all
 
   sleep 0.4
   check(core.instance_variable_get(:@thPack).alive?, "the packet thread survives it")
   check(attempts.empty?, "nothing was handed to the parser")
 
   # The connection still works normally afterwards
-  server.enqueue_incoming_udp(udp_packet(0x01, 'after'))
-  core.schedule_packet(server, :udp)
+  server.instance_variable_get(:@tcp_incoming_queue).push(tcp_packet(0x01, 'after'))
+  core.schedule_packet(server, :tcp)
   check(pop_within(attempts) == 'after', "a real packet is still processed afterwards")
 end
 

@@ -826,7 +826,7 @@ module ED2K
       candidates = servers_at(ip)
       return [candidates.first, false] if candidates.size <= 1
       preferred = prefer ? candidates.select{ |server| prefer.call(server) } : []
-      return [preferred.first, false] if preferred.size <= 1
+      return [preferred.first, false] if preferred.size == 1
       [candidates.first, true]
     end
 

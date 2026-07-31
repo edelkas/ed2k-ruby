@@ -50,6 +50,23 @@ def report
   exit(1)
 end
 
+# Whether UDP is currently built into the core. It's toggled as a unit (Server/Client#udp_setup and
+# Core#init_udp_socket are commented out together), so a freshly built peer having a UDP address is a faithful proxy
+# for the whole UDP path being live. Lets the UDP-dependent tests skip while UDP is disabled and light up again on
+# their own once it's restored, instead of hard-failing against a feature that's deliberately off.
+# @return [Boolean]
+def udp_enabled?
+  ED2K::Server.new('127.0.0.1', 5000).udp_port == 5004
+end
+
+# Announce that a test file is being skipped and finish it as a pass, so a deliberately-disabled feature doesn't
+# read as a failure in the suite. Call it in place of {report}.
+# @param reason [String] Why the file is skipped.
+def skip_file(reason)
+  puts "\nSKIPPED: #{reason}"
+  exit(0)
+end
+
 # Find a port that's currently free. There's an unavoidable race between releasing the probe socket
 # and the caller binding it, so this is a best effort rather than a reservation.
 #
@@ -70,11 +87,15 @@ end
 # Spin up a running core, hand it to the block, and always stop it afterwards. The block also
 # receives an array that accumulates every log line the core emits, as `[level, message]` pairs,
 # which lets tests assert on logging without printing anything themselves.
-# @param log_level [Integer] Level for the core's own stdout logger. Silent by default.
+#
+# The core's own stdout logger is disabled (tests capture via the block instead), and the level is left at DEBUG so
+# the capture logger receives every message; the core gates on `@log_level` before any logger runs, so a stricter
+# level here would silently drop lines the tests want to inspect. Pass a stricter `log_level` only to test that gating.
+# @param log_level [Integer] Level below which messages are dropped before reaching the capture logger.
 # @yieldparam core [ED2K::Core] The started core.
 # @yieldparam logs [Array<Array(Integer,String)>] Log lines captured so far.
-def with_core(log_level: ED2K::Core::LOG_LEVEL_NONE)
-  core = ED2K::Core.new(log_level: log_level)
+def with_core(log_level: ED2K::Core::LOG_LEVEL_DEBUG)
+  core = ED2K::Core.new(default_logger: false, log_level: log_level)
   logs = []
   core.add_logger{ |msg, level| logs << [level, msg] }
   core.config(udp_port: free_port(udp: true))

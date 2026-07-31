@@ -100,7 +100,10 @@ module ED2K
     def tcp_setup(socket = nil)
       @socket = socket if socket
 
-      # Current state of the connection
+      # Current state of the connection. tcp_setup runs once the connection exists (we dialed out and it succeeded, or
+      # we accepted an inbound one), so the peer is ready to exchange TCP packets from here on. Without this an accepted
+      # connection would stay @ready_tcp = false and queue_tcp_packet would refuse to send to it.
+      @ready_tcp = true
       @readable = true
       @writable = true
 
