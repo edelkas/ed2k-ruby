@@ -30,13 +30,15 @@ module ED2K
     # Serialize and dump a tag.
     # @param name [Integer,String] The tag "name", which identifies the tag. It can be an integer opcode, or a string name.
     # @param value [Integer,Float,String] The payload of the tag, its type depends on the tag (`Integer` for integer tags, etc).
+    # @param new [Boolean] Whether to allow the new style Lugdunum tag format (see {Tag}).
     # @return [String] The resulting serialized tag as a binary string.
-    # @raise [StandardError] If the supplied value has incorrect type.
+    # @raise [StandardError] If the supplied name or value has incorrect type.
     def self.write(name, value, new: false)
       # Tag key
       if name.is_a?(Integer)
         key = new ? name.chr : [1, name].pack('S<C') # Length field is always 1
       else
+        raise "Tag names in new tags must be integers" if new
         key = [name.bytesize, name].pack('S<a*')
       end
       switch = new ? 0x80 : 0x00 # Toggle type's highest bit to indicate new-style tag
@@ -67,6 +69,15 @@ module ED2K
       else
         raise "Invalid tag value type"
       end
+    end
+
+    # Serialize a taglist. A taglist is always preceded by the tag count as a uint32.
+    # @param tags [Hash] Keys contain the tags' names, values contain the tags' values. See {#write}.
+    # @param new [Boolean] Whether to allow the new style Lugdunum tag format (see {Tag}).
+    # @return [String] The resulting taglist as a binary string.
+    # @raise [StandardError] If any tag value has incorrect type.
+    def self.write_list(tags, new: false)
+      [tags.size].pack('L<') + tags.map{ |k, v| write(k, v, new: new) }.join
     end
 
     # Parse a taglist. A taglist is prefixed by the tag count.
