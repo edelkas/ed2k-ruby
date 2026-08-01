@@ -1,3 +1,5 @@
+require 'securerandom'
+
 module ED2K
 
   # This module encapsulates all the hashing facilities for the different parts of the protocol that require it. Notably,
@@ -6,6 +8,27 @@ module ED2K
   # Handling) provides better granularity by SHA1-hashing the 180KB blocks of one part to recover from corruption.
   # Users are also identified by hashes themselves.
   module Hashing extend self
+
+    # Simple helper to format hashes in human-readable form.
+    # @param hash [String] Arbitrary binary string, usually containing a client/file hash.
+    # @return [String] Regular string with the ASCII hexdump of the hash.
+    def print_hash(hash)
+      hash.unpack1('H*').upcase
+    end
+
+    # Create a new client hash. You should only do this once and then reuse it from that point on, or import it from your
+    # eMule configuration, as this hash identifies your client in the ed2k network and, in particular, determines your
+    # earned credits. It's a 16-byte hash, but it's not really an MD4/MD5 digest, just a cryptographically-secure randomly
+    # generated chunk, with a couple bytes used as sentinels for the client version.
+    # @param sentinel_1 [Integer] The first sentinel value, from `0` to `255`. eMule uses `14`, old eMule used `13`, MLdonkey uses `77` (ASCII `M`).
+    # @param sentinel_2 [Integer] The second sentinel value, from `0` to `255`. eMule uses `111`, old eMule used `110`, MLdonkey uses `76` (ASCII `L`).
+    # @return [String] 16-byte binary string with the freshly created digest.
+    def create_client_hash(sentinel_1: 14, sentinel_2: 111)
+      hash = SecureRandom.random_bytes(16)
+      hash[5] = sentinel_1.chr
+      hash[14] = sentinel_2.chr
+      hash
+    end
 
     # Computes the **ed2k hash** of a file, which uniquely identifies the file in the ed2k network. This hash only depends
     # on the contents of the file, not the name nor the metadata. More specifically, the MD4 hash of each 9500KB part is
