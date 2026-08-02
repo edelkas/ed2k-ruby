@@ -154,6 +154,7 @@ module ED2K
   PACKETSIZE              = 10 * 1024       # Packets are the individual ed2k messages (<10KB). Clients split blocks into this size when sending them.
   PACKET_HEADER_SIZE      = 6               # The header of every ed2k packet contains the protocol (char), size (uint32) and opcode (char).
   UDP_PACKET_HEADER_SIZE  = 2               # UDP packet headers lack the size field (inferred from the datagram), leaving just protocol (char) and opcode (char).
+  MAX_PACKET_SIZE         = 1024 ** 2       # Maximum allowable payload size of TCP packets (1MB). UDP packets are limited by datagram capacity (64KB).
 
   # ------------ CONNECTION TAGS
   # These are sent when connecting to a server (login) or another client (hello) to exchange information about our client

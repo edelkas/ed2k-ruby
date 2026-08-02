@@ -550,6 +550,9 @@ module ED2K
     # Socket thread permanently monitors sockets for R/W activity. Each cycle is wrapped so that an unexpected exception
     # (a bug, an unforeseen socket error the per-connection read/write rescues don't cover, ...) only aborts that one
     # cycle and gets logged, instead of killing the thread and freezing the whole I/O pipeline.
+    # @todo: Should we loop inside each cycle until all sockets have been drained / we've ran out of grant, to save CPU?
+    #        This is what we were doing previously per socket, but we removed it because a fast peer could potentially
+    #        starve our entire bandwidth, losing a fair distribution among all peers.
     def run_socket_thread
       while @thSockRun
         begin
@@ -724,7 +727,8 @@ module ED2K
     # one is a complete packet. We demultiplex by sender IP to the corresponding server or client and hand it off to that
     # connection's incoming UDP queue, scheduling it for the packet thread just like a TCP packet. Datagrams from unknown
     # peers are dropped (they can't be attributed to a connection yet).
-    # TODO: We should probably rescue many more exception types here from the socket stuff
+    # @todo We should probably rescue many more exception types here from the socket stuff
+    # @todo We might receive datagrams from unknown peers, we're currently dropping those!
     def receive_udp
       loop do
         begin
@@ -746,13 +750,14 @@ module ED2K
           log_warning("Received UDP datagram from #{addr.ip_address}:#{addr.ip_port}, but several known servers share "\
                       "that IP and none is uniquely awaiting an answer, attributing it to #{conn.format_name()}") if ambiguous
         end
-        if conn
-          conn.udp_answered
-          conn.enqueue_incoming_udp(data)
-          schedule_packet(conn, :udp)
-        else
+        if !conn
           log_debug("Received UDP datagram from unknown peer #{addr.ip_address}:#{addr.ip_port}, dropping")
+          next
         end
+        next if !conn.validate_udp_packet(data) # Don't wakeup packet thread for garbage datagrams
+        conn.udp_answered
+        conn.enqueue_incoming_udp(data)
+        schedule_packet(conn, :udp)
       end
     rescue IO::WaitReadable # No more datagrams to read
     end

@@ -212,6 +212,14 @@ module ED2K
       @ready_tcp = false
     end
 
+    # Instead of disconnecting directly, this closes both ends of the socket and marks it as unreadable / unwritable.
+    # This allows the packet thread to finish parsing the remaining incoming packets in the queue, at which point the
+    # reaper in the socket thread will finish tearing down this connection.
+    def schedule_disconnect
+      close_for_reading()
+      close_for_writing()
+    end
+
     # Discard a socket whose connection attempt never succeeded. Unlike {#disconnect}, this doesn't shut the socket
     # down or clear the R/W buffers and packet queues: none of those exist yet, since {#tcp_setup} only runs once a
     # connection is established. In particular, `shutdown` is skipped on purpose, as it raises `Errno::ENOTCONN` on a
@@ -303,10 +311,7 @@ module ED2K
       else
         @core.log_debug("Connection was lost while writing to #{format_name()}")
       end
-      # The peer is gone, so tear down both ends rather than only the write side, letting the socket thread's alive?
-      # reaper fully disconnect once any received packets are processed (see the matching branch in #read).
-      close_for_writing()
-      close_for_reading()
+      schedule_disconnect() # Close both socket ends without disconnecting immediately, see function docs
       sent == 0 ? -1 : sent
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
       sent == 0 ? -1 : sent
@@ -342,7 +347,8 @@ module ED2K
       while total - offset >= PACKET_HEADER_SIZE
         protocol, size, opcode = @read_buffer.unpack('CL<C', offset: offset)
         size -= 1 # Size field includes opcode, but opcode is part of header
-        break if total - offset < PACKET_HEADER_SIZE + size
+        valid = validate_tcp_packet_header(protocol, size, opcode) # Invalid packets will close the connection!
+        break if !valid || total - offset < PACKET_HEADER_SIZE + size
         @tcp_incoming_queue.push(@read_buffer.byteslice(offset, PACKET_HEADER_SIZE + size))
         offset += PACKET_HEADER_SIZE + size
         count += 1
@@ -368,8 +374,7 @@ module ED2K
       # both ends. Keeping only the read side closed would leave the connection writable, monitored and flagged as
       # ready forever, since alive? stays true while @writable is. Closing both lets the socket thread's alive? reaper
       # fully disconnect it once the already-received packets have been processed.
-      close_for_reading()
-      close_for_writing()
+      schedule_disconnect()
       -1
     rescue Errno::EPIPE, Errno::ECONNRESET # Peer closed socket
       if self.is_a?(ED2K::Server)
@@ -377,11 +382,58 @@ module ED2K
       else
         @core.log_debug("Connection was lost while reading from #{format_name()}")
       end
-      close_for_reading()                  # A reset kills the whole socket, so drop both ends (see the EOF branch)
-      close_for_writing()
+      schedule_disconnect()
       -1
     rescue Errno::ESHUTDOWN, IOError       # We closed the socket
       -1
+    end
+
+    # Ensure TPC packet header contains sane values. Invalid headers could be framing errors that desync the stream, so
+    # we can't allow any of that, that causes the connection to be dropped altogether. In particular, we ensure the
+    # protocol is supported and the size is not too large.
+    # @param protocol [Integer] First byte of the packet, specifies the ed2k protocol used.
+    # @param size [Integer] Supposed size of the payload (packet size minus 6).
+    # @param opcode [Integer] Last byte of header, specifies the packet type.
+    # @return [Boolean] Whether the packet header is valid or not. If `false` the connection has been dropped!
+    # @todo When handshake is implemented, we should ensure client is handshaked here as well.
+    def validate_tcp_packet_header(protocol, size, opcode)
+      log_lvl = is_server?() ? Core::LOG_LEVEL_ERROR : Core::LOG_LEVEL_WARNING
+      drop = false
+
+      # Validate protocol
+      if !self.class::SUPPORTED_TCP_PROTOCOLS.include?(protocol)
+        @core.log("TCP packet framing error detected (invalid protocol: #{protocol}), dropping connection to #{format_name()}", log_lvl)
+        drop = true
+      end
+
+      # Validate size
+      if size > MAX_PACKET_SIZE
+        @core.log("TCP packet framing error detected (size too large: #{size}), dropping connection to #{format_name()}", log_lvl)
+        drop = true
+      end
+
+      schedule_disconnect() if drop
+      !drop
+    end
+
+    # Ensure UDP packet is valid. Invalid datagrams are dropped before even waking up the packet thread to prevent
+    # wasting resources.
+    # @param packet [String] The received datagram.
+    # @return [Boolean] Whether the packet may be parsed or not.
+    def validate_udp_packet(packet)
+      # Validate size
+      if packet.size < 2
+        @core.log_debug{"Dropped invalid UDP packet received from #{format_name()}: too short"}
+        return false
+      end
+
+      # Validate protocol
+      if !self.class::SUPPORTED_UDP_PROTOCOLS.include?(packet.unpack1('C'))
+        @core.log_debug{"Dropped invalid UDP packet received from #{format_name()}: unsupported protocol"}
+        return false
+      end
+
+      true
     end
 
     # Queue an ed2k packet to be sent through the TCP socket.
@@ -488,11 +540,12 @@ module ED2K
       data = case protocol
       when OP_EDONKEYPROT
         parse_edonkey_tcp_packet(opcode, payload)
-      when OP_EMULEPROT, OP_PACKEDPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT
+      when OP_EMULEPROT, OP_PACKEDPROT
         @core.log_debug{"Received unsupported ed2k protocol #{protocol}"}
         @core.run_handler(HAND_UNSUPPORTED_PROTOCOL, self, Packet::Raw.new(protocol, opcode, payload))
         return true
       else
+        # We should never get here due to the guard in read
         @core.run_handler(HAND_UNKNOWN_PROTOCOL, self, Packet::Raw.new(protocol, opcode, payload))
         raise "Received unknown ed2k protocol #{protocol}"
       end

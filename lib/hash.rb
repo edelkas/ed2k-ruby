@@ -20,8 +20,8 @@ module ED2K
     # eMule configuration, as this hash identifies your client in the ed2k network and, in particular, determines your
     # earned credits. It's a 16-byte hash, but it's not really an MD4/MD5 digest, just a cryptographically-secure randomly
     # generated chunk, with a couple bytes used as sentinels for the client version.
-    # @param sentinel_1 [Integer] The first sentinel value, from `0` to `255`. eMule uses `14`, old eMule used `13`, MLdonkey uses `77` (ASCII `M`).
-    # @param sentinel_2 [Integer] The second sentinel value, from `0` to `255`. eMule uses `111`, old eMule used `110`, MLdonkey uses `76` (ASCII `L`).
+    # @param sentinel_1 [Integer] The first sentinel value, from `0` to `255`. eMule/aMule use `14`, old eMule used `13`, MLdonkey uses `77` (ASCII `M`).
+    # @param sentinel_2 [Integer] The second sentinel value, from `0` to `255`. eMule/aMule use `111`, old eMule used `110`, MLdonkey uses `76` (ASCII `L`).
     # @return [String] 16-byte binary string with the freshly created digest.
     def create_client_hash(sentinel_1: 14, sentinel_2: 111)
       hash = SecureRandom.random_bytes(16)

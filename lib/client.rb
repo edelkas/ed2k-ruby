@@ -30,6 +30,12 @@ module ED2K
   class Client
     include Connection
 
+    # The only allowable protocol values for client TCP packets, anything else is considered a framing error and the connection is dropped
+    SUPPORTED_TCP_PROTOCOLS = Set[OP_EDONKEYPROT, OP_PACKEDPROT, OP_EMULEPROT].freeze
+
+    # The only allowable protocol values for client UDP packets, anything else is discarded
+    SUPPORTED_UDP_PROTOCOLS = Set[OP_EMULEPROT, OP_KADEMLIAHEADER, OP_KADEMLIAPACKEDPROT].freeze
+
     # The ID of the client is an integer that identifies the client within a server. If it's 4 bytes then it corresponds
     # to its IPv4 address, and this should indicate that the client is reachable and we can establish a connection
     # directly. If it's at most 3 bytes then it's a random identifier assigned by the server, and we can only connect

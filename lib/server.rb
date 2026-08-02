@@ -45,6 +45,13 @@ module ED2K
   class Server
     include Connection
 
+    # Servers only support the original eDonkey protocol and its packed version, anything else is considered a framing
+    # error and the connection is dropped.
+    SUPPORTED_TCP_PROTOCOLS = Set[OP_EDONKEYPROT, OP_PACKEDPROT].freeze
+
+    # Servers don't use packed protocol for UDP packets. Any other value is discarded.
+    SUPPORTED_UDP_PROTOCOLS = Set[OP_EDONKEYPROT].freeze
+
     TIMEOUT_LOGIN = 30 # Maximum time in seconds to wait for a server's answer to our login request
 
     # The DNS to use to communicate with the server instead of the fixed IP address. Used by servers under dynamic IP
