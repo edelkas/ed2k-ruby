@@ -1,13 +1,18 @@
 module ED2K
 
   # Wrapper for ed2k packets. All communications in the **ed2k** and **Kad** networks take place by exchanging these packets.
-  # This gem uses {Packet} objects mostly for incoming packets, so the user can recognize and parse them. Since outgoing
-  # packets are queued by their respective high-level methods (e.g. {Server#send_login}), the user doesn't really need to
-  # manually instantiate those.
+  # This includes file transfers themselves, but also many _control_ packets used to orchestrate the network.
   #
-  # ## Structure
+  # When using this gem you must set up **handlers** to decide how to handle each type of incoming packet (e.g.
+  # {Core#handle_hello}). This gem uses {Packet} objects mostly as arguments to these handlers, so you get the parsed
+  # content nicely.
   #
-  # The following technical information is not required for using the gem, it's only presented for documentation purposes.
+  # For sending packets, on the other hand, you can simply call the corresponding high-level methods (e.g. {Client#send_hello}),
+  # so there's no need to ever instantiate with {Packet} objects.
+  #
+  # ## Technical aspects
+  #
+  # The following technical information **is not required** for using the gem, it's only presented for documentation purposes.
   #
   # Packet headers:
   # - **TCP** packets have a 6-byte header: protocol (char), size (uint32) and opcode (char).
@@ -25,13 +30,22 @@ module ED2K
   # _can_ overlap in the following 3 scenarios:
   # - If the _channel_ is different: TCP vs TDP.
   # - If the _protocol_ is different: the same opcode could be used with different meanings in each of the 5 protocols above.
-  # - If the _direction_ is different: Server->Client vs Client->Server vs Client->Client.
+  # - If the _direction_ is different: {Server}->{Client} vs {Client}->{Server} vs {Client}->{Client}.
   #
   # So a parser must be selected carefully taking into account all of the above factors.
   #
   # The **size** field is the length of the packet in bytes _minus 5_ (i.e. excluding the protocol and size fields, but notably,
   # including the opcode field). This field is only required for TCP packets, as UDP packets' lengths can be inferred from
   # the UDP headers and don't require any buffering.
+  #
+  # Most of the workload happens through TCP, including file transfers themselves. UDP packets are used particularly for
+  # three purposes: global server queries and pings, the _eMule extended protocol_, and the serverless _Kad network_.
+  # A client can still function without UDP usage though. UDP packet headers lack the size field, since it can be inferred
+  # from the UDP headers.
+  #
+  # Another important aspect of the protocol are {Tag}s, which are tuples formed by a `type`, a `length` and a `value`.
+  # They allow to extend the protocol by appending additional information to preexisting opcodes. An unknown tag can simply
+  # be skipped by an older version of the software.
   class Packet
 
     # The packet's ed2k protocol, can be one of five: {OP_EDONKEYPROT}, {OP_EMULEPROT}, {OP_PACKEDPROT},

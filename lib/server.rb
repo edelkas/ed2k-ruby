@@ -13,25 +13,28 @@ module ED2K
   #
   # - For stable long-standing connections a TCP stream is used, this is known as _logging in_ the server. In this scenario,
   #   the client will share its files and they will be indexed, and the client will remain as an available source for them
-  #   while connected. After logging in, the server will attempt to determine if connections can also be established with
+  #   while connected. After connecting, the server will attempt to determine if connections can also be established _to_
   #   the client, leading to two different scenarios:
   #
-  #     * If they can, the [ID assigned](https://www.emule-project.com/home/perl/help.cgi?l=1&rm=show_topic&topic_id=103)
-  #       to the client will be its IPv4 address. This scenario is known as **High ID** and indicates that other clients can
-  #       freely talk to it without having to first route the requests through the server, reducing bandwidth and enabling
-  #       communication between users in different servers.
+  #   * If they can, the [ID assigned](https://www.emule-project.com/home/perl/help.cgi?l=1&rm=show_topic&topic_id=103)
+  #     to the client will be its IPv4 address. This scenario is known as **High ID** and indicates that other clients can
+  #     freely talk to it without having to first route the requests through the server, reducing bandwidth and enabling
+  #     communication between users in different servers.
   #
-  #     * Otherwise, a random 3-byte ID (below ~16.7M) will be assigned instead, known as a **Low ID**. Since this increases
-  #       server bandwidth and reduces communication capabilities between clients, servers normally cap the amount of low
-  #       ID users they allow (originally 20% by default, but nowadays often raised to about 80%).
+  #   * Otherwise, a random 3-byte ID (below ~16.7M) will be assigned instead, known as a **Low ID**. Since this incurs
+  #     in overhead and reduces communication capabilities between clients, servers normally cap the amount of low
+  #     ID users they allow (originally 20% by default, but nowadays often raised to about 80%).
+  #     A high ID client can still connect to a low ID one _in the same server_ by relaying callback requests through
+  #     the server. Two low ID clients cannot connect to each other at all (it used to be possible to relay all data
+  #     through the server, but this feature was promptly removed for obvious reasons).
   #
   # - For sporadic short-term requests that don't require a connection UDP messages are used instead. This is the case of
   #   *Global Searches*, for instance, which performs a search query in all servers without necessarily being logged in them.
   #   The eMule extended protocol added several client to client UDP queries added as well, see {Client} for more info.
   #
-  # Nothing prevents a client from logging in to multiple servers simultaneously, despite the most well-known software,
-  # eMule, imposing that restriction. Indeed, other tools like MLDonkey enable it, and likewise, a {Core} can connect to
-  # any amount of servers.
+  #
+  # Technically, nothing prevents a client from logging in to multiple servers simultaneously, despite the most well-known
+  # client, eMule, imposing that restriction. Indeed, other tools like MLDonkey enable it, but we don't so far.
   #
   # Servers have a [limit](https://www.emule-project.com/home/perl/help.cgi?l=1&rm=show_topic&topic_id=150) on how many
   # files they will index for each client. Originally this limit was very modest, around 500, but nowadays they are usually
@@ -400,7 +403,7 @@ module ED2K
       @tcp_flags = flags if flags
       flags ||= 0
       self.pending_login = false # The ID assignment is the answer to our login request
-      @core.log_info("Received new ID from #{format_name()}: #{id}")
+      @core.log_notice("Logged in to #{format_name()} with #{id > 0xFFFFFF ? 'High' : 'Low'} ID, our ID is #{id}")
       @core.log_debug("Received ID change packet: id=#{id}, flags=#{flags}, ip=#{ED2K::unpack_ip(ip || 0)}, obfTCPport=#{obfuscated_tcp_port}")
       @logged = true
       Packet::IdChange.new(id, flags, ip, obfuscated_tcp_port)

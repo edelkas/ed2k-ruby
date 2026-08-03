@@ -398,22 +398,22 @@ module ED2K
     # @todo When handshake is implemented, we should ensure client is handshaked here as well.
     def validate_tcp_packet_header(protocol, size, opcode)
       log_lvl = is_server?() ? Core::LOG_LEVEL_ERROR : Core::LOG_LEVEL_WARNING
-      drop = false
 
       # Validate protocol
       if !self.class::SUPPORTED_TCP_PROTOCOLS.include?(protocol)
         @core.log("TCP packet framing error detected (invalid protocol: #{protocol}), dropping connection to #{format_name()}", log_lvl)
-        drop = true
+        schedule_disconnect()
+        return false
       end
 
       # Validate size
       if size > MAX_PACKET_SIZE
         @core.log("TCP packet framing error detected (size too large: #{size}), dropping connection to #{format_name()}", log_lvl)
-        drop = true
+        schedule_disconnect()
+        return false
       end
 
-      schedule_disconnect() if drop
-      !drop
+      true
     end
 
     # Ensure UDP packet is valid. Invalid datagrams are dropped before even waking up the packet thread to prevent

@@ -1,7 +1,8 @@
 module ED2K
 
   # Implements eMule's **protocol obfuscation**. You typically won't need to do this manually, it'll be handled
-  # automatically by the gem whenever specified and supported by both peers.
+  # automatically by the gem whenever specified and supported by both peers. Currently only partially implemented
+  # and not yet used by the gem.
   #
   # This feature was introduced in late 2006 in eMule 0.47b and supported by eserver 17.8 onwards. It's purpose is to mask
   # eMule's traffic, originally to prevent being recognized and throttled / blocked by ISPs or network admins, because the
